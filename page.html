@@ -57,6 +57,7 @@
     <button data-tab="outbox">消息<span class="badge" id="bOut" style="display:none"></span></button>
     <button data-tab="approvals">审批<span class="badge" id="bApp" style="display:none"></span></button>
     <button data-tab="chat">对话</button>
+    <button data-tab="connectors">连接器</button>
   </div>
   <button id="refresh">刷新</button>
   <div id="view"><p class="empty">加载中…</p></div>
@@ -166,12 +167,45 @@ function load() {
                '<button class="no" onclick="decide(\'/deny\',' + i + ')">拒绝</button></div></div>';
       }).join("");
     }).catch(err);
+  } else if (tab === "connectors") {
+    loadConnectors();
   } else {
     renderChat(false);
   }
 }
 function decide(path, i) {
   api(path, { method: "POST", body: JSON.stringify({ index: i }) }).then(load).catch(err);
+}
+var CONN_STATE = { connected: "已连接", ready: "可连接", waiting: "等待授权", unconfigured: "未配置" };
+function loadConnectors() {
+  api("/connectors").then(function (r) {
+    var view = document.getElementById("view");
+    if (!r.connectors.length) { view.innerHTML = '<p class="empty">暂无连接器</p>'; return; }
+    var anyWaiting = false;
+    view.innerHTML = r.connectors.map(function (c) {
+      if (c.state === "waiting") anyWaiting = true;
+      var btns = "";
+      if (c.id === "google" && c.state === "ready")
+        btns = '<div class="row"><button class="ok" onclick="connConnect(\'google\')">连接</button></div>';
+      if (c.state === "waiting" && c.verification_url)
+        btns = '<div class="v">打开 <a href="' + esc(c.verification_url) + '" target="_blank">' + esc(c.verification_url) + '</a> 输入代码：<b>' + esc(c.user_code || "") + '</b></div><div class="k">在 Google 页面完成授权后，这里会自动变成已连接</div>';
+      if (c.disconnectable && c.state === "connected")
+        btns = '<div class="row"><button class="no" onclick="connDisconnect(\'' + c.id + '\')">断开</button></div>';
+      return '<div class="card"><div class="v">' + esc(c.name) +
+        ' <span class="badge" style="background:' + (c.state === "connected" ? "#16a34a" : "#888") + '">' + esc(CONN_STATE[c.state] || c.state) + '</span></div>' +
+        '<div class="msg">' + esc(c.description) + '</div>' +
+        '<div class="k">提供：' + esc((c.provides || []).join("、")) + '</div>' +
+        '<div class="k">' + esc(c.detail || "") + '</div>' + btns + '</div>';
+    }).join("");
+    if (anyWaiting && tab === "connectors") setTimeout(loadConnectors, 5000);
+  }).catch(err);
+}
+function connConnect(id) {
+  api("/connectors/" + id + "/connect", { method: "POST", body: "{}" }).then(loadConnectors).catch(err);
+}
+function connDisconnect(id) {
+  if (!confirm("断开这个连接器？断开后 agent 将失去它提供的能力，重新连接需要再次授权。")) return;
+  api("/connectors/" + id + "/disconnect", { method: "POST", body: "{}" }).then(loadConnectors).catch(err);
 }
 function err(e) {
   document.getElementById("view").innerHTML = '<p class="empty err">' + esc(e.message || e) + '</p>';

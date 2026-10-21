@@ -55,6 +55,11 @@ try:
 except Exception:
     google_auth = None
 
+try:
+    import connectors
+except Exception:
+    connectors = None
+
 # Google 设备码授权流程状态（进程内）：
 # idle / waiting（等用户在手机上输码授权）/ connected / error / expired
 _google_flow = {"status": "idle"}
@@ -131,6 +136,35 @@ class Handler(BaseHTTPRequestHandler):
             out["user_code"] = _google_flow.get("user_code")
             out["verification_url"] = _google_flow.get("verification_url")
         return out
+
+    def _google_connect(self):
+        # 发起 Google 设备码授权：返回网址+短码，用户在手机上输码授权，
+        # 后台线程轮询换令牌。/google/connect 与 /connectors/google/connect 共用。
+        if google_auth is None or not google_auth.client_configured():
+            return self._send(409, {"error": "client_not_configured"})
+        if google_auth.connected():
+            return self._send(200, {"status": "already_connected"})
+        if _google_flow.get("status") == "waiting":
+            return self._send(200, {
+                "status": "waiting",
+                "user_code": _google_flow.get("user_code"),
+                "verification_url": _google_flow.get("verification_url")})
+        try:
+            flow = google_auth.start_device_flow()
+        except Exception as e:
+            return self._send(502, {"error": f"start_failed: {e}"})
+        _google_flow.update(
+            status="waiting", user_code=flow.get("user_code"),
+            verification_url=flow.get("verification_url"))
+        threading.Thread(
+            target=_google_flow_worker,
+            args=(flow.get("device_code"), flow.get("interval", 5)),
+            daemon=True).start()
+        agent.log("[Google授权] 设备码流程已发起")
+        return self._send(200, {
+            "status": "waiting",
+            "user_code": flow.get("user_code"),
+            "verification_url": flow.get("verification_url")})
 
     def _chat(self, state, data):
         """POST /chat：把用户消息 + 精简历史 + 实时状态喂给模型，返回回复文本。"""
@@ -221,6 +255,15 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/google/status":
             return self._send(200, self._google_status())
+        if path == "/connectors":
+            items = connectors.list_status() if connectors else []
+            for it in items:
+                if (it["id"] == "google" and it["state"] != "connected"
+                        and _google_flow.get("status") == "waiting"):
+                    it["state"] = "waiting"
+                    it["user_code"] = _google_flow.get("user_code")
+                    it["verification_url"] = _google_flow.get("verification_url")
+            return self._send(200, {"connectors": items})
         if path == "/outbox":
             items = [e for e in state.get("outbox", []) if not e.get("delivered")]
             return self._send(200, {"items": items})
@@ -251,33 +294,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(202, {"update": "started"})
 
         if path == "/google/connect":
-            # 发起 Google 设备码授权：返回网址+短码，用户在手机上输码授权，
-            # 后台线程轮询换令牌。授权状态查 GET /google/status。
-            if google_auth is None or not google_auth.client_configured():
-                return self._send(409, {"error": "client_not_configured"})
-            if google_auth.connected():
-                return self._send(200, {"status": "already_connected"})
-            if _google_flow.get("status") == "waiting":
-                return self._send(200, {
-                    "status": "waiting",
-                    "user_code": _google_flow.get("user_code"),
-                    "verification_url": _google_flow.get("verification_url")})
-            try:
-                flow = google_auth.start_device_flow()
-            except Exception as e:
-                return self._send(502, {"error": f"start_failed: {e}"})
-            _google_flow.update(
-                status="waiting", user_code=flow.get("user_code"),
-                verification_url=flow.get("verification_url"))
-            threading.Thread(
-                target=_google_flow_worker,
-                args=(flow.get("device_code"), flow.get("interval", 5)),
-                daemon=True).start()
-            agent.log("[Google授权] 设备码流程已发起")
-            return self._send(200, {
-                "status": "waiting",
-                "user_code": flow.get("user_code"),
-                "verification_url": flow.get("verification_url")})
+            return self._google_connect()
+
+        if path.startswith("/connectors/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[2] == "connect" and parts[1] == "google":
+                return self._google_connect()
+            if len(parts) == 3 and parts[2] == "disconnect":
+                if connectors and connectors.disconnect(parts[1]):
+                    if parts[1] == "google":
+                        _google_flow.update(status="idle")
+                    agent.log(f"[连接器] 已断开: {parts[1]}")
+                    return self._send(200, {"ok": True})
+                return self._send(400, {"error": "cannot_disconnect"})
+            return self._send(404, {"error": "unknown_connector_action"})
 
         if path == "/report":
             # 手机端上报本地数据（电量/位置/日历/通知等），原样存入

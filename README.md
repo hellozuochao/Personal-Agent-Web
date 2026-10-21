@@ -40,6 +40,8 @@ AGENT_API_TOKEN=xxx python3 server.py --host 0.0.0.0 --port 8000
 - `GET /approvals`：待拍板的动作
 - `POST /report`：手机上报本地数据（电量/位置/日历…），存入 `state["phone_data"]`
 - `POST /approve` / `POST /deny`：`{"index": 0}` 批准/拒绝第 N 条待审批
+- `GET /connectors`：连接器列表与状态（网页"连接器"页签的数据源）
+- `POST /connectors/<id>/connect` / `POST /connectors/<id>/disconnect`：连接/断开某个连接器
 
 鉴权：`Authorization: Bearer <token>`。本机调试（127.0.0.1）可不设 token；
 局域网给手机用必须设 token；别直接暴露公网。
@@ -66,6 +68,18 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
 - token 自动生成并只显示一次，手机端要用它做 Bearer 鉴权
 - 首次启动无 state.json 时从默认状态起步，老状态缺字段自动补齐
 - 手机直连：改 `always-on-api.service` 的 `--host` 为 `0.0.0.0`（token 必须已设置），生产建议前置反向代理做 TLS
+
+## 连接器（v1，2026-10-21）
+
+`connectors.py` 是连接器注册表：每个连接器声明授权方式、提供的能力，
+状态现场计算、不落库；令牌只存各自的私有位置。网页新增"连接器"页签，
+按注册表渲染卡片（状态徽章 / 连接 / 断开），新增连接器不用改页面结构。
+
+- `google`（oauth2_device，用户自助）：设备码授权，令牌存私有目录
+  `google_token.json`；提供 gmail/calendar 两个感官工具。断开 = 删令牌，
+  客户端配置保留。兼容接口：`GET /google/status`、`POST /google/connect`。
+- `openrouter`（managed_key，部署注入）：密钥由 systemd 环境变量注入，
+  网页只看状态、不能断开；提供 decide 决策与 chat 对话。
 
 ## 设计铁律（抄作业抄精髓）
 
