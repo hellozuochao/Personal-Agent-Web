@@ -15,6 +15,11 @@ import os
 
 import google_auth
 
+try:
+    import mail_cn
+except Exception:
+    mail_cn = None
+
 
 def _google_status():
     if not google_auth.client_configured():
@@ -29,6 +34,13 @@ def _openrouter_status():
     if os.environ.get("OPENROUTER_API_KEY"):
         return {"state": "connected", "detail": "密钥已由部署配置注入"}
     return {"state": "unconfigured", "detail": "未注入 OPENROUTER_API_KEY"}
+
+
+def _mail_cn_status():
+    if mail_cn is None or not mail_cn.configured():
+        return {"state": "unconfigured", "detail": "尚未配置国内邮箱"}
+    cfg = mail_cn.load_config()
+    return {"state": "connected", "detail": f"已配置：{cfg.get('email', '')}"}
 
 
 CONNECTORS = [
@@ -49,6 +61,15 @@ CONNECTORS = [
         "provides": ["decide 模型决策", "chat 网页对话"],
         "status": _openrouter_status,
         "disconnectable": False,
+    },
+    {
+        "id": "mail_cn",
+        "name": "国内邮箱（IMAP）",
+        "auth": "imap_code",
+        "description": "用 IMAP + 客户端授权码只读访问网易/QQ 等国内邮箱（只读邮件头，不读正文）。",
+        "provides": ["mail_sense 邮件感官（国内）"],
+        "status": _mail_cn_status,
+        "disconnectable": True,
     },
 ]
 
@@ -80,5 +101,8 @@ def disconnect(connector_id):
             os.remove(google_auth.TOKEN_FILE)
         except OSError:
             pass
+        return True
+    if connector_id == "mail_cn" and mail_cn is not None:
+        mail_cn.delete_config()
         return True
     return False

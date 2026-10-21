@@ -35,6 +35,8 @@
   .chatbar button { padding: 0 20px; border-radius: 10px; border: none; font-size: 15px; cursor: pointer; }
   input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 15px;
           border-radius: 10px; border: 1px solid #8886; margin: 8px 0 12px; }
+  select { width: 100%; box-sizing: border-box; padding: 10px; font-size: 15px;
+           border-radius: 10px; border: 1px solid #8886; margin: 8px 0 0; background: transparent; }
   #refresh { width: 100%; padding: 9px 0; border-radius: 10px; border: 1px solid #8886;
              background: transparent; font-size: 14px; cursor: pointer; margin-bottom: 12px; }
   .time { color: #888; font-size: 12px; }
@@ -189,6 +191,16 @@ function loadConnectors() {
         btns = '<div class="row"><button class="ok" onclick="connConnect(\'google\')">连接</button></div>';
       if (c.state === "waiting" && c.verification_url)
         btns = '<div class="v">打开 <a href="' + esc(c.verification_url) + '" target="_blank">' + esc(c.verification_url) + '</a> 输入代码：<b>' + esc(c.user_code || "") + '</b></div><div class="k">在 Google 页面完成授权后，这里会自动变成已连接</div>';
+      if (c.id === "mail_cn" && c.state !== "connected")
+        btns = '<div style="margin-top:6px"><select id="mcProv">' +
+          '<option value="wangyi">网易邮箱（163/126/yeah）</option>' +
+          '<option value="qq">QQ 邮箱</option>' +
+          '<option value="foxmail">Foxmail 邮箱</option></select>' +
+          '<input id="mcEmail" type="email" placeholder="邮箱地址" autocomplete="off">' +
+          '<input id="mcCode" type="password" placeholder="客户端授权码（不是登录密码）" autocomplete="off">' +
+          '<div class="k">授权码在邮箱网页版「设置 → POP3/SMTP/IMAP」里开启服务后生成；提交后会当场试登录，验证通过才保存</div>' +
+          '<div class="row"><button class="ok" onclick="connConfigureMail()">验证并连接</button></div>' +
+          '<p class="err" id="mcErr"></p></div>';
       if (c.disconnectable && c.state === "connected")
         btns = '<div class="row"><button class="no" onclick="connDisconnect(\'' + c.id + '\')">断开</button></div>';
       return '<div class="card"><div class="v">' + esc(c.name) +
@@ -206,6 +218,17 @@ function connConnect(id) {
 function connDisconnect(id) {
   if (!confirm("断开这个连接器？断开后 agent 将失去它提供的能力，重新连接需要再次授权。")) return;
   api("/connectors/" + id + "/disconnect", { method: "POST", body: "{}" }).then(loadConnectors).catch(err);
+}
+function connConfigureMail() {
+  var prov = document.getElementById("mcProv").value;
+  var em = document.getElementById("mcEmail").value.trim();
+  var code = document.getElementById("mcCode").value.trim();
+  var errEl = document.getElementById("mcErr");
+  if (!em || !code) { errEl.textContent = "邮箱地址和授权码都要填"; return; }
+  errEl.textContent = "正在试登录…";
+  api("/connectors/mail_cn/configure", { method: "POST", body: JSON.stringify({ provider: prov, email: em, code: code }) })
+    .then(function () { loadConnectors(); })
+    .catch(function (e) { errEl.textContent = e.message || e; });
 }
 function err(e) {
   document.getElementById("view").innerHTML = '<p class="empty err">' + esc(e.message || e) + '</p>';

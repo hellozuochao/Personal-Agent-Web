@@ -80,6 +80,11 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
   客户端配置保留。兼容接口：`GET /google/status`、`POST /google/connect`。
 - `openrouter`（managed_key，部署注入）：密钥由 systemd 环境变量注入，
   网页只看状态、不能断开；提供 decide 决策与 chat 对话。
+- `mail_cn`（imap_code，用户自助）：国内邮箱（网易/QQ/Foxmail），用户在
+  连接器页填邮箱 + 客户端授权码，服务器当场 IMAP 试登录、通过才保存到
+  私有目录 `mail_cn.json`（600）。提供 mail_sense 感官：只读未读数与
+  最新邮件头（发件人/主题/时间），不读正文、不标已读。配置接口：
+  `POST /connectors/mail_cn/configure`；断开 = 删配置。
 
 ## 设计铁律（抄作业抄精髓）
 

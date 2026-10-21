@@ -60,6 +60,11 @@ try:
 except Exception:
     connectors = None
 
+try:
+    import mail_cn
+except Exception:
+    mail_cn = None
+
 # Google 设备码授权流程状态（进程内）：
 # idle / waiting（等用户在手机上输码授权）/ connected / error / expired
 _google_flow = {"status": "idle"}
@@ -197,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
             "recent_outbox": recent,
             "gmail_last": state.get("gmail_last"),
             "calendar_next": state.get("calendar_next"),
+            "mail_cn_last": state.get("mail_cn_last"),
         }
         system = (CHAT_SYSTEM + "\n\n当前状态："
                   + json.dumps(context, ensure_ascii=False))
@@ -252,6 +258,7 @@ class Handler(BaseHTTPRequestHandler):
                 "phone_data": state.get("phone_data", {}),
                 "gmail_last": state.get("gmail_last"),
                 "calendar_next": state.get("calendar_next"),
+                "mail_cn_last": state.get("mail_cn_last"),
             })
         if path == "/google/status":
             return self._send(200, self._google_status())
@@ -263,6 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                     it["state"] = "waiting"
                     it["user_code"] = _google_flow.get("user_code")
                     it["verification_url"] = _google_flow.get("verification_url")
+                if it["id"] == "mail_cn" and it["state"] == "connected":
+                    last = state.get("mail_cn_last") or {}
+                    if last:
+                        it["detail"] += f"；未读 {last.get('unseen', 0)} 封"
             return self._send(200, {"connectors": items})
         if path == "/outbox":
             items = [e for e in state.get("outbox", []) if not e.get("delivered")]
@@ -300,6 +311,15 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[2] == "connect" and parts[1] == "google":
                 return self._google_connect()
+            if len(parts) == 3 and parts[2] == "configure" and parts[1] == "mail_cn":
+                if mail_cn is None:
+                    return self._send(500, {"error": "mail_module_missing"})
+                ok, detail = mail_cn.configure(
+                    data.get("provider"), data.get("email"), data.get("code"))
+                if ok:
+                    agent.log(f"[连接器] 国内邮箱已配置: {data.get('email')}")
+                    return self._send(200, {"ok": True, "detail": detail})
+                return self._send(400, {"ok": False, "error": detail})
             if len(parts) == 3 and parts[2] == "disconnect":
                 if connectors and connectors.disconnect(parts[1]):
                     if parts[1] == "google":

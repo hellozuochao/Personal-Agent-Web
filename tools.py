@@ -158,3 +158,45 @@ except Exception:
 if _GOOGLE_READY:
     TOOLS.append(Tool("gmail_sense", cost=3, run=_gmail_sense))
     TOOLS.append(Tool("calendar_sense", cost=4, run=_calendar_sense))
+
+
+# ---------- 国内邮箱感官（IMAP 只读邮件头） ----------
+# 能力跟着配置走：mail_cn.json 在（用户已在连接器页配置国内邮箱）才注册。
+
+def _mail_sense(state):
+    """看一眼国内邮箱：未读数 + 最新几封的发件人/主题。
+    首轮只记基线；之后按"最新一封"的日期+主题指纹判断哪些是新到的。"""
+    import mail_cn
+    try:
+        data = mail_cn.fetch_recent(limit=5)
+    except Exception as e:
+        return {"ok": False, "note": f"国内邮箱读取失败: {e}"}
+    latest = data["latest"]
+    fingerprint = ((latest[0]["date"], latest[0]["subject"])
+                   if latest else None)
+    prev = state.get("mail_cn_fingerprint")
+    first_run = prev is None
+    new_items = []
+    if not first_run:
+        for item in latest:
+            if (item["date"], item["subject"]) == tuple(prev):
+                break
+            new_items.append(item)
+    state["mail_cn_fingerprint"] = list(fingerprint) if fingerprint else None
+    state["mail_cn_last"] = {
+        "unseen": data["unseen"],
+        "new_count": 0 if first_run else len(new_items),
+        "new": [] if first_run else new_items}
+    return {"ok": True, "unseen": data["unseen"], "total": data["total"],
+            "new_count": state["mail_cn_last"]["new_count"],
+            "new": state["mail_cn_last"]["new"],
+            "note": "首轮只记基线" if first_run else ""}
+
+
+try:
+    import mail_cn as _mc
+    _MAIL_CN_READY = _mc.configured()
+except Exception:
+    _MAIL_CN_READY = False
+if _MAIL_CN_READY:
+    TOOLS.append(Tool("mail_sense", cost=3, run=_mail_sense))
