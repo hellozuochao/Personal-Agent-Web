@@ -86,6 +86,9 @@ key/token 都由服务器 systemd 环境变量注入）。
 - 服务器装了 `always-on-update.timer`，每 5 分钟跑 `/usr/local/bin/always-on-update.sh`
   （源文件 `deploy/update.sh`）：下载 main 分支源码包，包里 VERSION 与本机不同才
   把代码覆盖进 /opt/always-on 并重启两个服务，把版本号写入 `.deployed_commit`
+- 立即更新：带 token `POST /admin/update` 可远程触发同一套更新脚本（yoyo 推送后
+  即时部署用，秒级生效）；定时器保留作兜底。更新脚本有 flock 防重入，
+  两个触发源撞在一起也只跑一个。
 - 验证：`GET /status` 返回的 `code_version` 就是当前在跑的版本号
 
 运行时文件（state.json / approvals.json / 日志）不在源码包里，更新不碰它们。
