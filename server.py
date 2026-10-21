@@ -118,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
                             ".deployed_commit")
         try:
             with open(path, encoding="utf-8") as f:
-                return f.read().strip()[:12] or None
+                return f.read().strip()[:24] or None
         except OSError:
             return None
 
