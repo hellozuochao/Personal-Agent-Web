@@ -1,0 +1,18 @@
+[Unit]
+Description=Always-on agent phone API
+After=network.target
+
+[Service]
+Type=simple
+User=__AGENT_USER__
+WorkingDirectory=/opt/always-on
+Environment=AGENT_API_TOKEN=__API_TOKEN__
+ExecStart=/usr/bin/python3 /opt/always-on/server.py --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+# 2026-10-20 起手机直连：--host 0.0.0.0 + token 鉴权（用户定版单用户形态）。
+# token 是唯一的门，务必保密；日后上多用户/公开发布前需加 TLS 反代。

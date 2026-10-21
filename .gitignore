@@ -1,0 +1,8 @@
+state.json
+approvals.json
+agent.log
+update.log
+.deployed_commit
+__pycache__/
+*.bak*
+*.tmp

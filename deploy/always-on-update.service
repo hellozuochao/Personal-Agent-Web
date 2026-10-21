@@ -1,0 +1,8 @@
+[Unit]
+Description=always-on agent 自动更新（git pull + 重启）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/always-on/deploy/update.sh

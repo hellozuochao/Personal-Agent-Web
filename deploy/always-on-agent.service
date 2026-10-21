@@ -1,0 +1,15 @@
+[Unit]
+Description=Always-on personal agent (tick loop)
+After=network.target
+
+[Service]
+Type=simple
+User=__AGENT_USER__
+WorkingDirectory=/opt/always-on
+Environment=AGENT_TICK_SECONDS=300
+ExecStart=/usr/bin/python3 /opt/always-on/agent.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

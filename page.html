@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的 Agent</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0; padding: 16px; max-width: 640px; margin-inline: auto; }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tabs button { flex: 1; padding: 9px 0; border-radius: 10px; border: 1px solid #8886;
+                 background: transparent; font-size: 15px; cursor: pointer; }
+  .tabs button.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .badge { background: #dc2626; color: #fff; border-radius: 999px; padding: 0 7px;
+           font-size: 12px; margin-left: 4px; }
+  .card { border: 1px solid #8885; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+  .k { color: #888; font-size: 13px; }
+  .v { font-size: 16px; margin-top: 2px; word-break: break-all; }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  .row button { flex: 1; padding: 9px 0; border-radius: 10px; border: none; font-size: 15px; cursor: pointer; }
+  .ok { background: #16a34a; color: #fff; }
+  .no { background: #dc2626; color: #fff; }
+  .ghost { background: transparent; border: 1px solid #8886 !important; }
+  .empty { color: #888; text-align: center; padding: 26px 0; }
+  .msg { white-space: pre-wrap; }
+  .bub { max-width: 85%; padding: 9px 12px; border-radius: 14px; margin: 6px 0;
+         white-space: pre-wrap; word-break: break-word; font-size: 15px; }
+  .bub.u { background: #2563eb; color: #fff; margin-left: auto; }
+  .bub.a { border: 1px solid #8885; margin-right: auto; }
+  .chatbar { display: flex; gap: 8px; margin-top: 10px; }
+  .chatbar textarea { flex: 1; box-sizing: border-box; padding: 10px; font-size: 15px;
+                      border-radius: 10px; border: 1px solid #8886; font-family: inherit; resize: none; }
+  .chatbar button { padding: 0 20px; border-radius: 10px; border: none; font-size: 15px; cursor: pointer; }
+  input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 15px;
+          border-radius: 10px; border: 1px solid #8886; margin: 8px 0 12px; }
+  #refresh { width: 100%; padding: 9px 0; border-radius: 10px; border: 1px solid #8886;
+             background: transparent; font-size: 14px; cursor: pointer; margin-bottom: 12px; }
+  .time { color: #888; font-size: 12px; }
+  .err { color: #dc2626; }
+</style>
+</head>
+<body>
+<h1>我的 Agent</h1>
+
+<div id="gate" style="display:none">
+  <p>第一次打开需要填一次访问令牌（token），之后这台手机会自动记住。</p>
+  <input id="token" type="password" placeholder="把那串代码粘贴到这里，多粘了也没关系" autocomplete="off">
+  <div class="row"><button class="ok" id="saveToken">保存并进入</button></div>
+  <p class="err" id="gateErr"></p>
+</div>
+
+<div id="app" style="display:none">
+  <div class="tabs">
+    <button data-tab="status" class="on">状态</button>
+    <button data-tab="outbox">消息<span class="badge" id="bOut" style="display:none"></span></button>
+    <button data-tab="approvals">审批<span class="badge" id="bApp" style="display:none"></span></button>
+    <button data-tab="chat">对话</button>
+  </div>
+  <button id="refresh">刷新</button>
+  <div id="view"><p class="empty">加载中…</p></div>
+  <p style="text-align:center"><a href="#" id="reset" class="time">更换 token</a></p>
+</div>
+
+<script>
+var tab = "status";
+var TOKEN_RE = /[0-9a-fA-F]{32}/;
+function extractToken(s) {
+  s = (s || "").replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/\s+/g, "");
+  var m = s.match(TOKEN_RE);
+  return m ? m[0].toLowerCase() : "";
+}
+function tok() {
+  var v = localStorage.getItem("agent_token") || "";
+  if (/^[0-9a-f]{32}$/.test(v)) return v;
+  var ex = extractToken(v);
+  if (ex) { localStorage.setItem("agent_token", ex); return ex; }
+  return v;
+}
+function esc(s) { var d = document.createElement("div"); d.textContent = (s == null ? "" : String(s)); return d.innerHTML; }
+function fmtT(t) {
+  if (!t) return "—";
+  var d = new Date(t);
+  return isNaN(d) ? esc(t) : d.toLocaleString("zh-CN", { hour12: false });
+}
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = { "Authorization": "Bearer " + tok() };
+  if (opts.body) opts.headers["Content-Type"] = "application/json";
+  return fetch(path, opts).then(function (r) {
+    if (r.status === 401) throw new Error("token 不对，请点页面底部“更换 token”重填");
+    return r.json().then(function (j) {
+      if (!r.ok) throw new Error(j.note || j.error || ("请求失败 " + r.status));
+      return j;
+    });
+  });
+}
+function badge(id, n) {
+  var el = document.getElementById(id);
+  el.style.display = n > 0 ? "" : "none";
+  el.textContent = n;
+}
+function showGate(err) {
+  document.getElementById("gate").style.display = "";
+  document.getElementById("app").style.display = "none";
+  document.getElementById("gateErr").textContent = err || "";
+}
+function showApp() {
+  document.getElementById("gate").style.display = "none";
+  document.getElementById("app").style.display = "";
+  load();
+}
+document.getElementById("saveToken").onclick = function () {
+  var v = extractToken(document.getElementById("token").value);
+  if (!v) { showGate("没识别到完整的 token。请回聊天里长按那串 32 位代码、整段复制，再粘贴到这里（多粘了别的内容也没关系，会自动识别）"); return; }
+  localStorage.setItem("agent_token", v);
+  fetch("/status", { headers: { "Authorization": "Bearer " + v } }).then(function (r) {
+    if (r.status === 401) { localStorage.removeItem("agent_token"); showGate("这个 token 服务器不认，再检查一下"); }
+    else showApp();
+  }).catch(function () { showGate("连不上服务器，检查一下网络"); });
+};
+document.getElementById("reset").onclick = function (e) {
+  e.preventDefault();
+  localStorage.removeItem("agent_token");
+  showGate("");
+};
+document.getElementById("refresh").onclick = load;
+document.querySelectorAll(".tabs button").forEach(function (b) {
+  b.onclick = function () {
+    tab = b.dataset.tab;
+    document.querySelectorAll(".tabs button").forEach(function (x) { x.classList.toggle("on", x === b); });
+    load();
+  };
+});
+function load() {
+  var view = document.getElementById("view");
+  if (tab === "status") {
+    api("/status").then(function (s) {
+      badge("bOut", s.undelivered || 0);
+      badge("bApp", s.pending_approvals || 0);
+      view.innerHTML =
+        '<div class="card"><div class="k">已运行轮次</div><div class="v">' + esc(s.tick_count) + '</div></div>' +
+        '<div class="card"><div class="k">上一轮时间</div><div class="v">' + fmtT(s.last_tick) + '</div></div>' +
+        '<div class="card"><div class="k">未读消息</div><div class="v">' + esc(s.undelivered) + '</div></div>' +
+        '<div class="card"><div class="k">待你审批</div><div class="v">' + esc(s.pending_approvals) + '</div></div>';
+    }).catch(err);
+  } else if (tab === "outbox") {
+    api("/outbox").then(function (r) {
+      badge("bOut", r.items.length);
+      if (!r.items.length) { view.innerHTML = '<p class="empty">没有未读消息</p>'; return; }
+      view.innerHTML = r.items.map(function (e) {
+        return '<div class="card"><div class="msg">' + esc(e.text) + '</div>' +
+               '<div class="time">' + fmtT(e.ts) + '</div></div>';
+      }).join("");
+    }).catch(err);
+  } else if (tab === "approvals") {
+    api("/approvals").then(function (r) {
+      badge("bApp", r.items.length);
+      if (!r.items.length) { view.innerHTML = '<p class="empty">没有待审批的事</p>'; return; }
+      view.innerHTML = r.items.map(function (a, i) {
+        return '<div class="card"><div class="v">' + esc(a.action) + '</div>' +
+               '<div class="msg">' + esc(a.description || "") + '</div>' +
+               '<div class="time">' + fmtT(a.created) + '</div>' +
+               '<div class="row"><button class="ok" onclick="decide(\'/approve\',' + i + ')">批准</button>' +
+               '<button class="no" onclick="decide(\'/deny\',' + i + ')">拒绝</button></div></div>';
+      }).join("");
+    }).catch(err);
+  } else {
+    renderChat(false);
+  }
+}
+function decide(path, i) {
+  api(path, { method: "POST", body: JSON.stringify({ index: i }) }).then(load).catch(err);
+}
+function err(e) {
+  document.getElementById("view").innerHTML = '<p class="empty err">' + esc(e.message || e) + '</p>';
+}
+var chatHist = [];
+try { chatHist = JSON.parse(localStorage.getItem("agent_chat_v1") || "[]"); } catch (e) { chatHist = []; }
+if (!Array.isArray(chatHist)) chatHist = [];
+function saveChat() { try { localStorage.setItem("agent_chat_v1", JSON.stringify(chatHist.slice(-40))); } catch (e) {} }
+function renderChat(waiting) {
+  var view = document.getElementById("view");
+  var bubbles = chatHist.length ? chatHist.map(function (m) {
+    return '<div class="bub ' + (m.role === "user" ? "u" : "a") + '">' + esc(m.content) + '</div>';
+  }).join("") : '<p class="empty">直接跟你的 agent 说话。比如问它：你现在什么状态？</p>';
+  view.innerHTML = '<div>' + bubbles +
+    (waiting ? '<div class="bub a">思考中…</div>' : "") + '</div>' +
+    '<div class="chatbar"><textarea id="chatIn" rows="2" placeholder="跟 agent 说点什么…"></textarea>' +
+    '<button class="ok" id="chatSend">发送</button></div>';
+  var ta = document.getElementById("chatIn");
+  document.getElementById("chatSend").onclick = sendChat;
+  ta.onkeydown = function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } };
+  ta.focus();
+}
+function sendChat() {
+  var ta = document.getElementById("chatIn");
+  var text = (ta.value || "").trim();
+  if (!text) return;
+  var prior = chatHist.slice(-10);
+  chatHist.push({ role: "user", content: text });
+  saveChat();
+  renderChat(true);
+  api("/chat", { method: "POST", body: JSON.stringify({ message: text, history: prior }) }).then(function (r) {
+    chatHist.push({ role: "assistant", content: r.reply || "(空回复)" });
+    saveChat();
+    renderChat(false);
+  }).catch(function (e) {
+    chatHist.push({ role: "assistant", content: "出错了：" + (e.message || e) });
+    saveChat();
+    renderChat(false);
+  });
+}
+(function () {
+  var q = new URLSearchParams(location.search).get("t");
+  if (q) {
+    var ex = extractToken(q);
+    if (ex) localStorage.setItem("agent_token", ex);
+    history.replaceState(null, "", location.pathname);
+  }
+})();
+if (tok()) showApp(); else showGate("");
+setInterval(function () { if (tok() && tab !== "chat" && document.getElementById("app").style.display !== "none") load(); }, 30000);
+</script>
+</body>
+</html>
