@@ -106,6 +106,7 @@ class Handler(BaseHTTPRequestHandler):
         recent = [e.get("text", "")[:120] for e in state.get("outbox", [])[-3:]]
         context = {
             "tick_count": state.get("tick_count", 0),
+            "code_version": self._code_version(),
             "last_tick": state.get("last_tick"),
             "inbox_waterline": state.get("inbox_waterline"),
             "inbox_alerts": state.get("inbox_alerts"),

@@ -148,8 +148,12 @@ def _decide_rules(state, observations):
 def _decide_model(state, observations):
     """调 OpenRouter 做决策。输出做防御性校验：reason 非法就丢弃 speak。"""
     import urllib.request
-    summary = {k: state.get(k) for k in
-               ("tick_count", "last_tick", "inbox_waterline", "inbox_alerts")}
+    summary = {k: state.get(k) for k in ("tick_count", "last_tick")}
+    # 收件箱工具没在本机注册时（数据源不在这台机器），摘要里就不出现收件箱字段，
+    # 免得模型盯着一个 null 水位反复臆测故障、重复提审批（2026-10-21 实测教训）。
+    if any(t.name == "inbox_waterline" for t in TOOLS):
+        summary["inbox_waterline"] = state.get("inbox_waterline")
+        summary["inbox_alerts"] = state.get("inbox_alerts")
     summary["pending_approvals"] = len(
         [a for a in state.get("approval_queue", [])
          if a.get("status") == "pending"])
