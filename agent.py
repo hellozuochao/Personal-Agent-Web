@@ -21,6 +21,7 @@ TICK_SECONDS = int(os.environ.get("AGENT_TICK_SECONDS", "300"))
 
 from tools import TOOLS, refresh as _refresh_tools  # noqa: E402
 from executors import EXECUTORS, execute as _execute_item  # noqa: E402
+import memory as agent_memory  # noqa: E402
 
 
 # ---------- 状态 ----------
@@ -166,6 +167,9 @@ def _decide_model(state, observations):
     summary["pending_approvals"] = len(
         [a for a in state.get("approval_queue", [])
          if a.get("status") == "pending"])
+    mem = agent_memory.summary_for_decide()
+    if mem:
+        summary["memory"] = mem  # 长期记忆块：决策时能看见用户偏好和未收尾事项
     outbox = state.get("outbox", [])
     summary["last_spoken"] = outbox[-1].get("text") if outbox else None
     body = json.dumps({
@@ -251,6 +255,7 @@ def tick(state):
     # 有 exec 载荷 -> 走执行器真干活，结果写回队列项并播报一次；
     # 执行失败累计 3 次 -> 标 failed 并播报，不无限重试。
     # 纯文本动作没有执行器 -> 只关账并注明，不再冒充"已执行"。
+    executed_notes = []
     for item in state.get("approval_queue", []):
         if item.get("status") != "approved" or item.get("executed"):
             continue
@@ -266,6 +271,7 @@ def tick(state):
         if ok:
             item["executed"] = True
             item["status"] = "executed"
+            executed_notes.append(f"{item['action']} -> {detail}")
             log(f"[执行成功] {item['action']} -> {detail}")
             maybe_speak(state, f"已执行：{item['action']}（{detail}）",
                         "material_change")
@@ -280,12 +286,60 @@ def tick(state):
                     f"执行失败（已重试 3 次）：{item['action']} —— {detail}",
                     "material_change")
     save_approvals(state.get("approval_queue", []))
+
+    # 3c. 记忆蒸馏（影子模式）：观察攒够了就产出记忆编辑提案，
+    # 做成一条带 memory_apply 载荷的审批——用户批准才落库。
+    # 队列里已有待批的记忆提案时不叠加新提案。
+    try:
+        queue = state.get("approval_queue", [])
+        has_pending_memory = any(
+            i.get("status") == "pending"
+            and (i.get("exec") or {}).get("type") == "memory_apply"
+            for i in queue)
+        if not has_pending_memory:
+            out = agent_memory.distill_propose(state["tick_count"])
+            if out:
+                proposal, consumed = out
+                if proposal["edits"]:
+                    labels = "、".join(sorted(
+                        {e.get("label", "?") for e in proposal["edits"]}))
+                    request_approval(
+                        state,
+                        f"记忆蒸馏：建议改动 {len(proposal['edits'])} 处（{labels}）",
+                        proposal["reflection"] or "定期蒸馏",
+                        {"type": "memory_apply",
+                         "params": {"edits": proposal["edits"]}})
+                else:
+                    log(f"[记忆蒸馏] 消费 {consumed} 条观察，无值得落库的改动")
+    except Exception as e:
+        log(f"[记忆蒸馏] 异常（已忽略）: {e}")
+
     # 4. 输出：只有实质变化或需要拍板才说话
     if plan["speak"]:
         text, reason = plan["speak"]
         maybe_speak(state, text, reason)
     else:
         log("无实质变化，保持安静。")
+
+    # 5. 记一笔观察（记忆的观察层）：本轮的新邮件/播报/提案/执行结果
+    try:
+        rec = {"ts": state["last_tick"], "tick": state["tick_count"]}
+        for ob in observations:
+            if (ob["tool"] == "mail_sense" and ob["ok"]
+                    and ob["result"].get("new_count")):
+                rec["new_mail"] = [
+                    {"from": m.get("from"), "subject": m.get("subject")}
+                    for m in ob["result"].get("new", [])][:5]
+        if plan["speak"]:
+            rec["spoke"] = plan["speak"][0]
+        proposed = [a.get("do") for a in plan["actions"] if a.get("do")]
+        if proposed:
+            rec["proposed"] = proposed
+        if executed_notes:
+            rec["executed"] = executed_notes
+        agent_memory.obs_append(rec)
+    except Exception as e:
+        log(f"[记忆观察] 写入异常（已忽略）: {e}")
 
     save_state(state)
 

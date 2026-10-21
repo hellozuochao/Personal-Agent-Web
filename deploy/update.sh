@@ -9,18 +9,31 @@ APP_DIR="${APP_DIR:-/opt/always-on}"
 REPO_TARBALL="https://codeload.github.com/hellozuochao/Personal-Agent-Web/tar.gz/refs/heads/main"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+LOG="$APP_DIR/update.log"
+saylog() { echo "$(date -Is) $*" >> "$LOG" 2>/dev/null || true; }
 
 # 防重入：定时器和远程即时触发可能撞在一起，同一时刻只跑一个更新
 exec 9>/tmp/always-on-update.lock
 flock -n 9 || exit 0
 
-curl -sL --max-time 120 -o "$TMP/repo.tar.gz" "$REPO_TARBALL" || exit 0
-tar xzf "$TMP/repo.tar.gz" -C "$TMP" 2>/dev/null || exit 0
+curl -sL --retry 2 --max-time 120 -o "$TMP/repo.tar.gz" "$REPO_TARBALL" \
+  || { saylog "codeload 下载失败"; exit 0; }
+tar xzf "$TMP/repo.tar.gz" -C "$TMP" 2>/dev/null \
+  || { saylog "源码包解压失败"; exit 0; }
 SRC="$TMP/Personal-Agent-Web-main"
-[ -d "$SRC" ] || exit 0
+[ -d "$SRC" ] || { saylog "源码包结构异常（没有预期的目录）"; exit 0; }
 NEW_VERSION="$(cat "$SRC/VERSION" 2>/dev/null || echo "")"
 OLD_VERSION="$(cat "$APP_DIR/VERSION" 2>/dev/null || echo "")"
-[ -z "$NEW_VERSION" ] && exit 0
+[ -z "$NEW_VERSION" ] && { saylog "源码包里没有 VERSION 文件"; exit 0; }
+# 手动触发（/admin/update）会先落一个标记：这种 run 把远端版本记进日志，
+# 事后能分清"脚本没跑"还是"跑了但拉到的是旧包"（2026-10-21 两次卡版的教训）。
+if [ -f /tmp/always-on-update.mark ]; then
+  MARK_AGE=$(( $(date +%s) - $(stat -c %Y /tmp/always-on-update.mark 2>/dev/null || echo 0) ))
+  if [ "$MARK_AGE" -lt 600 ]; then
+    saylog "手动触发检查：远端 $NEW_VERSION / 本机 ${OLD_VERSION:-无}"
+    rm -f /tmp/always-on-update.mark
+  fi
+fi
 [ "$NEW_VERSION" = "$OLD_VERSION" ] && exit 0
 
 # 部署：包内只有代码文件；运行时文件（state.json / approvals.json / 日志）不在包内，不受影响

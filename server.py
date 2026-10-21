@@ -122,6 +122,14 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return None
 
+    def _memory_versions(self):
+        try:
+            import memory as agent_memory
+            return {label: b.get("version")
+                    for label, b in agent_memory.blocks_load().items()}
+        except Exception:
+            return {}
+
     def _google_status(self):
         if google_auth is None or not google_auth.client_configured():
             return {"client_configured": False, "connected": False,
@@ -259,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                 "gmail_last": state.get("gmail_last"),
                 "calendar_next": state.get("calendar_next"),
                 "mail_cn_last": state.get("mail_cn_last"),
+                "memory_blocks": self._memory_versions(),
             })
         if path == "/google/status":
             return self._send(200, self._google_status())
@@ -297,6 +306,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/update":
             # 立即更新：脱离本进程拉起更新脚本（脚本部署后会重启本服务，
             # 所以响应先返回、脚本延迟 1 秒再跑）。鉴权已在上方统一完成。
+            # 先落一个标记文件：更新脚本见到 10 分钟内的标记，
+            # 会把这次拉到的远端版本记进 update.log（平时版本相同不记，
+            # 免得 5 分钟一条刷屏；手动触发时记下来便于事后确诊）。
+            try:
+                with open("/tmp/always-on-update.mark", "w") as f:
+                    f.write("triggered")
+            except Exception:
+                pass
             import subprocess
             subprocess.Popen(
                 ["bash", "-c", "sleep 1; /usr/local/bin/always-on-update.sh"],

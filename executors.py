@@ -37,9 +37,26 @@ def _mail_flag(params):
     return True, f"已给 {n} 封邮件加星标"
 
 
+def _memory_apply(params):
+    import datetime
+    import memory as agent_memory
+    edits = (params or {}).get("edits") or []
+    if not edits:
+        return False, "没有编辑指令"
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    applied, rejected = agent_memory.apply_edits(edits, ts)
+    if not applied:
+        return False, "记忆编辑全部被拒：" + "；".join(rejected)
+    detail = f"已应用 {len(applied)} 处记忆改动（{'、'.join(applied)}）"
+    if rejected:
+        detail += f"；拒绝 {len(rejected)} 处：{'；'.join(rejected)}"
+    return True, detail
+
+
 EXECUTORS = {
     "mail_mark_read": _mail_mark_read,
     "mail_flag": _mail_flag,
+    "memory_apply": _memory_apply,
 }
 
 

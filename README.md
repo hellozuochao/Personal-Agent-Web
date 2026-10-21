@@ -57,6 +57,14 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
 - 防御：speak 的 reason 非法直接丢弃；任何异常（超时/401/解析失败）回退规则版并记日志。
 - 审批执行闭环：`approval_queue` 里状态为 approved 的动作，下一轮 tick 自动执行并标记 executed。
   批准入口：网页版审批页、server.py 的 `/approve`、或 `approvals.py approve`。
+- 记忆系统（2026-10-21 起，`memory.py`，Letta 式三层 + 影子模式）：每轮 tick
+  往 observations.jsonl 记一条观察；攒够 12 条由模型蒸馏成记忆编辑提案
+  （四块：user_profile / active_threads / lessons / agent_self），提案走
+  审批队列（exec 类型 memory_apply），用户批准后才落库；记忆块内容会
+  注入 decide() 的决策上下文。蒸馏节奏：至少间隔 12 轮才尝试一次。
+- 自动更新诊断：更新脚本把下载失败/解压失败等异常和部署结果记入
+  /opt/always-on/update.log；手动触发（/admin/update）时额外记录本次
+  拉到的远端版本号，便于区分"脚本没跑"与"拉到了旧包"。
 - 执行层（2026-10-21 起，`executors.py`）：动作可带机器可读的 exec 载荷
   （`{"type": ..., "params": {...}}`），只有注册表内的类型能被执行。
   首批：`mail_mark_read` / `mail_flag`（对国内邮箱按 uid 标记已读/加星标，
