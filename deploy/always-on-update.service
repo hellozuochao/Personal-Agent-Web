@@ -5,4 +5,4 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/always-on/deploy/update.sh
+ExecStart=/usr/local/bin/always-on-update.sh
