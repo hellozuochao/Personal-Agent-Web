@@ -187,6 +187,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         state = agent.load_state()
 
+        if path == "/admin/update":
+            # 立即更新：脱离本进程拉起更新脚本（脚本部署后会重启本服务，
+            # 所以响应先返回、脚本延迟 1 秒再跑）。鉴权已在上方统一完成。
+            import subprocess
+            subprocess.Popen(
+                ["bash", "-c", "sleep 1; /usr/local/bin/always-on-update.sh"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return self._send(202, {"update": "started"})
+
         if path == "/report":
             # 手机端上报本地数据（电量/位置/日历/通知等），原样存入
             # state["phone_data"]，后续可做成新的感知工具。

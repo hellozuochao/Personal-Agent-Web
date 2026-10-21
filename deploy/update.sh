@@ -10,6 +10,10 @@ REPO_TARBALL="https://codeload.github.com/hellozuochao/Personal-Agent-Web/tar.gz
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# 防重入：定时器和远程即时触发可能撞在一起，同一时刻只跑一个更新
+exec 9>/tmp/always-on-update.lock
+flock -n 9 || exit 0
+
 curl -sL --max-time 120 -o "$TMP/repo.tar.gz" "$REPO_TARBALL" || exit 0
 tar xzf "$TMP/repo.tar.gz" -C "$TMP" 2>/dev/null || exit 0
 SRC="$TMP/Personal-Agent-Web-main"
