@@ -19,7 +19,7 @@ APPROVALS_FILE = os.path.join(BASE, "approvals.json")
 LOG_FILE = os.path.join(BASE, "agent.log")
 TICK_SECONDS = int(os.environ.get("AGENT_TICK_SECONDS", "300"))
 
-from tools import TOOLS  # noqa: E402
+from tools import TOOLS, refresh as _refresh_tools  # noqa: E402
 
 
 # ---------- 状态 ----------
@@ -204,6 +204,7 @@ def tick(state):
     state["tick_count"] = state.get("tick_count", 0) + 1
     state["last_tick"] = datetime.datetime.now().isoformat(timespec="seconds")
     log(f"--- tick #{state['tick_count']} 醒来 ---")
+    _refresh_tools()  # 配置变了（网页上连接/断开连接器）这一轮就生效
 
     # 1. 感知：按成本升序跑工具
     observations = []

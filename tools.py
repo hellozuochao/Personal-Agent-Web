@@ -150,14 +150,7 @@ def _calendar_sense(state):
             "note": "首轮只记基线" if first_run else ""}
 
 
-try:
-    import google_auth as _ga
-    _GOOGLE_READY = _ga.connected()
-except Exception:
-    _GOOGLE_READY = False
-if _GOOGLE_READY:
-    TOOLS.append(Tool("gmail_sense", cost=3, run=_gmail_sense))
-    TOOLS.append(Tool("calendar_sense", cost=4, run=_calendar_sense))
+
 
 
 # ---------- 国内邮箱感官（IMAP 只读邮件头） ----------
@@ -193,10 +186,32 @@ def _mail_sense(state):
             "note": "首轮只记基线" if first_run else ""}
 
 
-try:
-    import mail_cn as _mc
-    _MAIL_CN_READY = _mc.configured()
-except Exception:
-    _MAIL_CN_READY = False
-if _MAIL_CN_READY:
-    TOOLS.append(Tool("mail_sense", cost=3, run=_mail_sense))
+# ---------- 工具表刷新：能力跟着配置走 ----------
+# 只在进程启动时按当时的配置注册一次是不够的：用户在网页上连接或
+# 断开连接器之后，感官要下一轮就生效、不用重启进程。所以 tick 每轮
+# 先 refresh()，按当前配置原地重建 TOOLS（agent.py 是 from-import，
+# 必须原地改这个列表对象，不能换新的）。数据源不在本机就不注册——
+# 把"不存在"当警报的刷屏事故（2026-10-21）不能重演。
+
+def refresh():
+    tools = [Tool("heartbeat", cost=1, run=_heartbeat)]
+    if os.path.exists(WATERLINE_FILE):
+        tools.append(Tool("inbox_waterline", cost=2, run=_inbox_waterline))
+    try:
+        import google_auth as _ga
+        if _ga.connected():
+            tools.append(Tool("gmail_sense", cost=3, run=_gmail_sense))
+            tools.append(Tool("calendar_sense", cost=4, run=_calendar_sense))
+    except Exception:
+        pass
+    try:
+        import mail_cn as _mc
+        if _mc.configured():
+            tools.append(Tool("mail_sense", cost=3, run=_mail_sense))
+    except Exception:
+        pass
+    TOOLS[:] = tools
+    return TOOLS
+
+
+refresh()
