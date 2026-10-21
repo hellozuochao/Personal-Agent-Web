@@ -20,6 +20,7 @@ LOG_FILE = os.path.join(BASE, "agent.log")
 TICK_SECONDS = int(os.environ.get("AGENT_TICK_SECONDS", "300"))
 
 from tools import TOOLS, refresh as _refresh_tools  # noqa: E402
+from executors import EXECUTORS, execute as _execute_item  # noqa: E402
 
 
 # ---------- 状态 ----------
@@ -87,9 +88,11 @@ def maybe_speak(state, text, reason):
 
 
 # ---------- 审批链 ----------
-def request_approval(state, action, reason):
+def request_approval(state, action, reason, exec_payload=None):
     """高风险动作不直接执行，先进队列等人点头。
-    同一动作已在 pending 中 -> 不重复入队、不重复播报（模型每轮都提也只留一条）。"""
+    同一动作已在 pending 中 -> 不重复入队、不重复播报（模型每轮都提也只留一条）。
+    exec_payload 是机器可读的执行载荷（{"type": ..., "params": {...}}），
+    有它、且类型在执行器注册表里，批准后才真的干活；没有就只是文本提案。"""
     queue = state.setdefault("approval_queue", [])
     if any(item.get("action") == action and item.get("status") == "pending"
            for item in queue):
@@ -97,6 +100,8 @@ def request_approval(state, action, reason):
         return
     item = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "action": action, "reason": reason, "status": "pending"}
+    if exec_payload:
+        item["exec"] = exec_payload
     queue.append(item)
     save_approvals(queue)
     maybe_speak(state, f"有个动作等你拍板：{action}（{reason}）", "needs_decision")
@@ -128,7 +133,11 @@ DECIDE_SYSTEM = """你是 always-on 个人智能体的决策模块。输入是�
 - 无事可做时 actions 为空数组。
 - 输入里带了 pending_approvals（待审批数）和 last_spoken（上一条播报）：
   同一问题已在待审批中、或刚播报过，就不要重复提出、不要重复 speak。
-  持续存在的状态（如某文件一直缺失）只报第一次，后续轮次视为无事。"""
+  持续存在的状态（如某文件一直缺失）只报第一次，后续轮次视为无事。
+- 可执行动作：mail_sense 观察里的邮件带 uid。把邮件标记为已读、或加星标时，
+  给动作附带 exec 载荷：{"type": "mail_mark_read" 或 "mail_flag",
+  "params": {"uids": [uid, ...]}}，uid 必须来自本轮观察数据、不许编造；
+  带 exec 的动作一律 needs_approval=true。其他动作不要带 exec。"""
 
 
 def _decide_rules(state, observations):
@@ -183,8 +192,18 @@ def _decide_model(state, observations):
         speak = None  # 非法理由直接丢弃，不说话
     elif speak:
         speak = (speak["text"], speak["reason"])
-    actions = [a for a in plan.get("actions", [])
-               if isinstance(a, dict) and a.get("do")]
+    actions = []
+    for a in plan.get("actions", []):
+        if not (isinstance(a, dict) and a.get("do")):
+            continue
+        ex = a.get("exec")
+        if ex is not None and not (
+                isinstance(ex, dict) and ex.get("type") in EXECUTORS
+                and isinstance(ex.get("params"), dict)):
+            # exec 载荷不合法（类型不在注册表/参数缺失）-> 剥掉载荷，
+            # 动作降级为纯文本提案，批准了也不会被误执行。
+            a = {k: v for k, v in a.items() if k != "exec"}
+        actions.append(a)
     return {"speak": speak, "actions": actions}
 
 
@@ -219,19 +238,47 @@ def tick(state):
     # 2. 决策
     plan = decide(state, observations)
 
-    # 3. 行动：高风险先进审批，低风险直接跑
+    # 3. 行动：高风险先进审批，低风险直接跑。
+    # 带 exec 载荷的动作一律先进审批——动用户邮箱必须人点头，模型说了不算。
     for action in plan["actions"]:
-        if action.get("needs_approval"):
-            request_approval(state, action["do"], action.get("reason", ""))
+        if action.get("needs_approval") or action.get("exec"):
+            request_approval(state, action["do"], action.get("reason", ""),
+                             action.get("exec"))
         else:
             log(f"[执行] {action['do']}")
 
-    # 3b. 执行已批准的动作（之前排队、已在网页/聊天里点过批准的）
+    # 3b. 执行已批准的动作（网页/CLI 里点过批准的）：
+    # 有 exec 载荷 -> 走执行器真干活，结果写回队列项并播报一次；
+    # 执行失败累计 3 次 -> 标 failed 并播报，不无限重试。
+    # 纯文本动作没有执行器 -> 只关账并注明，不再冒充"已执行"。
     for item in state.get("approval_queue", []):
-        if item.get("status") == "approved" and not item.get("executed"):
-            log(f"[执行已批准] {item['action']}")
+        if item.get("status") != "approved" or item.get("executed"):
+            continue
+        if not item.get("exec"):
+            item["executed"] = True
+            item["status"] = "closed_noop"
+            item["exec_result"] = "纯文本动作，无可执行载荷，仅记录批准"
+            log(f"[执行关账] {item['action']}（无执行器）")
+            continue
+        ok, detail = _execute_item(item)
+        item["exec_attempts"] = item.get("exec_attempts", 0) + 1
+        item["exec_result"] = detail
+        if ok:
             item["executed"] = True
             item["status"] = "executed"
+            log(f"[执行成功] {item['action']} -> {detail}")
+            maybe_speak(state, f"已执行：{item['action']}（{detail}）",
+                        "material_change")
+        else:
+            log(f"[执行失败] {item['action']}: {detail}"
+                f"（第 {item['exec_attempts']} 次）")
+            if item["exec_attempts"] >= 3:
+                item["executed"] = True
+                item["status"] = "failed"
+                maybe_speak(
+                    state,
+                    f"执行失败（已重试 3 次）：{item['action']} —— {detail}",
+                    "material_change")
     save_approvals(state.get("approval_queue", []))
     # 4. 输出：只有实质变化或需要拍板才说话
     if plan["speak"]:

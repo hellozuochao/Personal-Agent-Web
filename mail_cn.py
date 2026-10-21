@@ -11,6 +11,7 @@ import email
 import imaplib
 import json
 import os
+import re
 from email.header import decode_header
 
 PRIVATE_DIR = os.environ.get("AGENT_PRIVATE_DIR") or os.environ.get(
@@ -155,12 +156,14 @@ def fetch_recent(limit=5):
             start = max(1, total - limit + 1)
             typ, msg_data = conn.fetch(
                 f"{start}:{total}",
-                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                "(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
             if typ == "OK":
                 for item in msg_data:
                     if isinstance(item, tuple):
+                        m = re.search(rb"UID (\d+)", item[0])
                         msg = email.message_from_bytes(item[1])
                         latest.append({
+                            "uid": int(m.group(1)) if m else None,
                             "from": _decode(msg.get("From")),
                             "subject": _decode(msg.get("Subject")),
                             "date": msg.get("Date", "")})
@@ -171,3 +174,36 @@ def fetch_recent(limit=5):
             conn.logout()
         except Exception:
             pass
+
+
+# ---------- 写操作（执行层专用，只经审批通过后调用） ----------
+
+def _uid_store(uids, flag):
+    cfg = load_config()
+    if not cfg:
+        raise RuntimeError("mail_cn 未配置")
+    conn = _connect(cfg)
+    try:
+        typ, _ = conn.select("INBOX")  # 写操作：不能只读打开
+        if typ != "OK":
+            raise RuntimeError("打不开收件箱")
+        uidset = ",".join(str(int(u)) for u in uids)
+        typ, _ = conn.uid("STORE", uidset, "+FLAGS", f"({flag})")
+        if typ != "OK":
+            raise RuntimeError("标记操作被服务器拒绝")
+        return len(uids)
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def mark_read(uids):
+    """把指定 uid 的邮件标记为已读。返回处理封数。"""
+    return _uid_store(uids, r"\Seen")
+
+
+def set_flag(uids):
+    """给指定 uid 的邮件加星标（重要标记）。返回处理封数。"""
+    return _uid_store(uids, r"\Flagged")

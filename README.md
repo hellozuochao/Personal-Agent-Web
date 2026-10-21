@@ -57,6 +57,12 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
 - 防御：speak 的 reason 非法直接丢弃；任何异常（超时/401/解析失败）回退规则版并记日志。
 - 审批执行闭环：`approval_queue` 里状态为 approved 的动作，下一轮 tick 自动执行并标记 executed。
   批准入口：网页版审批页、server.py 的 `/approve`、或 `approvals.py approve`。
+- 执行层（2026-10-21 起，`executors.py`）：动作可带机器可读的 exec 载荷
+  （`{"type": ..., "params": {...}}`），只有注册表内的类型能被执行。
+  首批：`mail_mark_read` / `mail_flag`（对国内邮箱按 uid 标记已读/加星标，
+  uid 来自 mail_sense 观察数据）。带 exec 的动作强制走审批；执行结果
+  写回队列项并播报一次；失败重试 3 次后标 failed 并播报。纯文本动作
+  没有执行器，批准后只关账（status=closed_noop）并注明，不冒充已执行。
 
 ## 部署到云服务器（deploy/）
 
