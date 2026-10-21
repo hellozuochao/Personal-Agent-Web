@@ -186,6 +186,44 @@ def _mail_sense(state):
             "note": "首轮只记基线" if first_run else ""}
 
 
+# ---------- 国内日历感官（CalDAV 只读） ----------
+# 能力跟着配置走：calendar_cn.json 在才注册。结果写进与 Google 版
+# 相同的 state 字段（calendar_next），状态页/对话上下文不用改。
+
+def _calendar_cn_sense(state):
+    """看一眼 CalDAV 日历：未来 7 天的日程、最近的一条。"""
+    import caldav_cn
+    try:
+        upcoming = caldav_cn.fetch_upcoming(days=7, limit=5)
+    except Exception as e:
+        return {"ok": False, "note": f"日历读取失败: {e}"}
+    state["calendar_next"] = [
+        {"summary": e["title"], "start": e["start"]} for e in upcoming]
+    state["calendar_cn_last"] = {
+        "next": upcoming[0] if upcoming else None,
+        "count_7d": len(upcoming)}
+    return {"ok": True, "upcoming_count": len(upcoming),
+            "next": upcoming[0] if upcoming else None,
+            "upcoming": upcoming}
+
+
+# ---------- 跟进事项感官（agent 原生，数据源是本地文件，恒注册） ----------
+
+def _followup_sense(state):
+    """看一眼跟进清单：有多少开着的、哪些到期了、下一条是什么。"""
+    import followups
+    due = followups.due_items()
+    opens = followups.open_items()
+    nxt = followups.next_open()
+    state["followups_open"] = len(opens)
+    state["followup_next"] = (
+        {"text": nxt["text"], "due": nxt["due"]} if nxt else None)
+    return {"ok": True, "open": len(opens),
+            "due": [{"id": i["id"], "text": i["text"], "due": i["due"]}
+                    for i in due],
+            "next": state["followup_next"]}
+
+
 # ---------- 工具表刷新：能力跟着配置走 ----------
 # 只在进程启动时按当时的配置注册一次是不够的：用户在网页上连接或
 # 断开连接器之后，感官要下一轮就生效、不用重启进程。所以 tick 每轮
@@ -210,6 +248,14 @@ def refresh():
             tools.append(Tool("mail_sense", cost=3, run=_mail_sense))
     except Exception:
         pass
+    try:
+        import caldav_cn as _cc
+        if _cc.configured():
+            tools.append(Tool("calendar_cn_sense", cost=3,
+                              run=_calendar_cn_sense))
+    except Exception:
+        pass
+    tools.append(Tool("followup_sense", cost=2, run=_followup_sense))
     TOOLS[:] = tools
     return TOOLS
 

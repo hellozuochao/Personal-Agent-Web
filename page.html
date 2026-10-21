@@ -191,6 +191,16 @@ function loadConnectors() {
         btns = '<div class="row"><button class="ok" onclick="connConnect(\'google\')">连接</button></div>';
       if (c.state === "waiting" && c.verification_url)
         btns = '<div class="v">打开 <a href="' + esc(c.verification_url) + '" target="_blank">' + esc(c.verification_url) + '</a> 输入代码：<b>' + esc(c.user_code || "") + '</b></div><div class="k">在 Google 页面完成授权后，这里会自动变成已连接</div>';
+      if (c.id === "calendar_cn" && c.state !== "connected")
+        btns = '<div style="margin-top:6px"><select id="ccProv">' +
+          '<option value="qq">QQ 邮箱日历</option>' +
+          '<option value="custom">自定义 CalDAV</option></select>' +
+          '<input id="ccAddr" type="email" placeholder="邮箱地址" autocomplete="off">' +
+          '<input id="ccCode" type="password" placeholder="客户端授权码（不是登录密码）" autocomplete="off">' +
+          '<input id="ccBase" type="text" placeholder="自定义 CalDAV 地址（选自定义时填，如 https://dav.example.com）" autocomplete="off">' +
+          '<div class="k">QQ 邮箱：先在网页版「设置 → POP3/IMAP/SMTP/Exchange/CardDAV 服务」里开启服务并生成授权码；提交后会当场做一次日历发现，验证通过才保存</div>' +
+          '<div class="row"><button class="ok" onclick="connConfigureCal()">验证并连接</button></div>' +
+          '<p class="err" id="ccErr"></p></div>';
       if (c.id === "mail_cn" && c.state !== "connected")
         btns = '<div style="margin-top:6px"><select id="mcProv">' +
           '<option value="wangyi">网易邮箱（163/126/yeah）</option>' +
@@ -227,6 +237,19 @@ function connConfigureMail() {
   if (!em || !code) { errEl.textContent = "邮箱地址和授权码都要填"; return; }
   errEl.textContent = "正在试登录…";
   api("/connectors/mail_cn/configure", { method: "POST", body: JSON.stringify({ provider: prov, email: em, code: code }) })
+    .then(function () { loadConnectors(); })
+    .catch(function (e) { errEl.textContent = e.message || e; });
+}
+function connConfigureCal() {
+  var prov = document.getElementById("ccProv").value;
+  var addr = document.getElementById("ccAddr").value.trim();
+  var code = document.getElementById("ccCode").value.trim();
+  var base = document.getElementById("ccBase").value.trim();
+  var errEl = document.getElementById("ccErr");
+  if (!addr || !code) { errEl.textContent = "邮箱地址和授权码都要填"; return; }
+  if (prov === "custom" && !base) { errEl.textContent = "自定义 CalDAV 要填服务地址"; return; }
+  errEl.textContent = "正在发现日历…";
+  api("/connectors/calendar_cn/configure", { method: "POST", body: JSON.stringify({ provider: prov, address: addr, code: code, base_url: base }) })
     .then(function () { loadConnectors(); })
     .catch(function (e) { errEl.textContent = e.message || e; });
 }

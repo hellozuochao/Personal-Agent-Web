@@ -138,7 +138,14 @@ DECIDE_SYSTEM = """你是 always-on 个人智能体的决策模块。输入是�
 - 可执行动作：mail_sense 观察里的邮件带 uid。把邮件标记为已读、或加星标时，
   给动作附带 exec 载荷：{"type": "mail_mark_read" 或 "mail_flag",
   "params": {"uids": [uid, ...]}}，uid 必须来自本轮观察数据、不许编造；
-  带 exec 的动作一律 needs_approval=true。其他动作不要带 exec。"""
+  带 exec 的动作一律 needs_approval=true。其他动作不要带 exec。
+- 跟进事项：followup_sense 观察的 due 非空 = 有跟进事项到期，
+  用 speak 提醒用户（material_change），一次说清哪件事。
+  当一件事需要在未来某个时间跟进（等回复、等结果、到期处理）时，
+  提动作并附带 exec：{"type": "followup_create",
+  "params": {"text": "要跟进的事", "due_in_hours": 距今小时数}}。
+- 日历：calendar 观察里有 2 小时内开始的日程时，用 speak 提醒
+  （material_change）；没有就不要提日历。"""
 
 
 def _decide_rules(state, observations):
@@ -330,6 +337,13 @@ def tick(state):
                 rec["new_mail"] = [
                     {"from": m.get("from"), "subject": m.get("subject")}
                     for m in ob["result"].get("new", [])][:5]
+            if (ob["tool"] == "followup_sense" and ob["ok"]
+                    and ob["result"].get("due")):
+                rec["followup_due"] = [d.get("text")
+                                       for d in ob["result"]["due"]]
+            if (ob["tool"] == "calendar_cn_sense" and ob["ok"]
+                    and ob["result"].get("next")):
+                rec["calendar_next"] = ob["result"]["next"].get("title")
         if plan["speak"]:
             rec["spoke"] = plan["speak"][0]
         proposed = [a.get("do") for a in plan["actions"] if a.get("do")]

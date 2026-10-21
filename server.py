@@ -65,6 +65,11 @@ try:
 except Exception:
     mail_cn = None
 
+try:
+    import caldav_cn
+except Exception:
+    caldav_cn = None
+
 # Google 设备码授权流程状态（进程内）：
 # idle / waiting（等用户在手机上输码授权）/ connected / error / expired
 _google_flow = {"status": "idle"}
@@ -268,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
                 "calendar_next": state.get("calendar_next"),
                 "mail_cn_last": state.get("mail_cn_last"),
                 "memory_blocks": self._memory_versions(),
+                "followups_open": state.get("followups_open"),
+                "followup_next": state.get("followup_next"),
             })
         if path == "/google/status":
             return self._send(200, self._google_status())
@@ -283,6 +290,10 @@ class Handler(BaseHTTPRequestHandler):
                     last = state.get("mail_cn_last") or {}
                     if last:
                         it["detail"] += f"；未读 {last.get('unseen', 0)} 封"
+                if it["id"] == "calendar_cn" and it["state"] == "connected":
+                    last = state.get("calendar_cn_last") or {}
+                    if last:
+                        it["detail"] += f"；未来 7 天 {last.get('count_7d', 0)} 个日程"
             return self._send(200, {"connectors": items})
         if path == "/outbox":
             items = [e for e in state.get("outbox", []) if not e.get("delivered")]
@@ -335,6 +346,16 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("provider"), data.get("email"), data.get("code"))
                 if ok:
                     agent.log(f"[连接器] 国内邮箱已配置: {data.get('email')}")
+                    return self._send(200, {"ok": True, "detail": detail})
+                return self._send(400, {"ok": False, "error": detail})
+            if len(parts) == 3 and parts[2] == "configure" and parts[1] == "calendar_cn":
+                if caldav_cn is None:
+                    return self._send(500, {"error": "caldav_module_missing"})
+                ok, detail = caldav_cn.configure(
+                    data.get("provider"), data.get("address"),
+                    data.get("code"), data.get("base_url"))
+                if ok:
+                    agent.log(f"[连接器] 日历已配置: {data.get('address')}")
                     return self._send(200, {"ok": True, "detail": detail})
                 return self._send(400, {"ok": False, "error": detail})
             if len(parts) == 3 and parts[2] == "disconnect":

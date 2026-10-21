@@ -68,9 +68,19 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
 - 执行层（2026-10-21 起，`executors.py`）：动作可带机器可读的 exec 载荷
   （`{"type": ..., "params": {...}}`），只有注册表内的类型能被执行。
   首批：`mail_mark_read` / `mail_flag`（对国内邮箱按 uid 标记已读/加星标，
-  uid 来自 mail_sense 观察数据）。带 exec 的动作强制走审批；执行结果
-  写回队列项并播报一次；失败重试 3 次后标 failed 并播报。纯文本动作
-  没有执行器，批准后只关账（status=closed_noop）并注明，不冒充已执行。
+  uid 来自 mail_sense 观察数据）；其后加入 `memory_apply`（应用记忆
+  蒸馏编辑）与 `followup_create`（新建跟进事项）。带 exec 的动作强制
+  走审批；执行结果写回队列项并播报一次；失败重试 3 次后标 failed
+  并播报。纯文本动作没有执行器，批准后只关账（status=closed_noop）
+  并注明，不冒充已执行。
+- 日历连接器（2026-10-21 起，`caldav_cn.py`）：CalDAV + 授权码，
+  标准发现流程（principal → 日历主目录 → 日历列表）验证后才保存；
+  内置 QQ 邮箱入口（dav.qq.com，需开启 Exchange/CardDAV 服务），
+  也支持任意自定义 CalDAV 服务。感官 calendar_cn_sense 只读未来
+  7 天日程，写入与 Google 版相同的 calendar_next 状态字段。
+- 跟进事项（2026-10-21 起，`followups.py`）：agent 替用户记的到期
+  跟进清单。只能经审批动作 followup_create 创建；到期后 24 小时内
+  由 followup_sense 每轮上报，decide() 开口提醒；超窗自动过期。
 
 ## 部署到云服务器（deploy/）
 

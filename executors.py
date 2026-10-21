@@ -53,10 +53,26 @@ def _memory_apply(params):
     return True, detail
 
 
+def _followup_create(params):
+    import followups
+    text = ((params or {}).get("text") or "").strip()
+    try:
+        hours = float((params or {}).get("due_in_hours"))
+    except (TypeError, ValueError):
+        return False, "due_in_hours 不是数字"
+    if not text:
+        return False, "跟进事项内容为空"
+    if not (0 < hours <= 24 * 30):
+        return False, "due_in_hours 超出范围（1 小时 ~ 30 天）"
+    item = followups.create(text, hours)
+    return True, f"已建跟进事项 #{item['id']}：{text}（{item['due']} 到期）"
+
+
 EXECUTORS = {
     "mail_mark_read": _mail_mark_read,
     "mail_flag": _mail_flag,
     "memory_apply": _memory_apply,
+    "followup_create": _followup_create,
 }
 
 

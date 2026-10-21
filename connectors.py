@@ -20,6 +20,11 @@ try:
 except Exception:
     mail_cn = None
 
+try:
+    import caldav_cn
+except Exception:
+    caldav_cn = None
+
 
 def _google_status():
     if not google_auth.client_configured():
@@ -41,6 +46,15 @@ def _mail_cn_status():
         return {"state": "unconfigured", "detail": "尚未配置国内邮箱"}
     cfg = mail_cn.load_config()
     return {"state": "connected", "detail": f"已配置：{cfg.get('email', '')}"}
+
+
+def _calendar_cn_status():
+    if caldav_cn is None or not caldav_cn.configured():
+        return {"state": "unconfigured", "detail": "尚未配置日历"}
+    cfg = caldav_cn.load_config()
+    n = len(cfg.get("calendar_urls", []))
+    return {"state": "connected",
+            "detail": f"已配置：{cfg.get('address', '')}（{n} 个日历）"}
 
 
 CONNECTORS = [
@@ -69,6 +83,15 @@ CONNECTORS = [
         "description": "用 IMAP + 客户端授权码只读访问网易/QQ 等国内邮箱（只读邮件头，不读正文）。",
         "provides": ["mail_sense 邮件感官（国内）"],
         "status": _mail_cn_status,
+        "disconnectable": True,
+    },
+    {
+        "id": "calendar_cn",
+        "name": "日历（CalDAV）",
+        "auth": "caldav_code",
+        "description": "用 CalDAV + 客户端授权码只读访问 QQ 邮箱日历或其他标准 CalDAV 服务，给 agent 装上日程感官。",
+        "provides": ["calendar_cn_sense 日历感官（国内）"],
+        "status": _calendar_cn_status,
         "disconnectable": True,
     },
 ]
@@ -104,5 +127,8 @@ def disconnect(connector_id):
         return True
     if connector_id == "mail_cn" and mail_cn is not None:
         mail_cn.delete_config()
+        return True
+    if connector_id == "calendar_cn" and caldav_cn is not None:
+        caldav_cn.delete_config()
         return True
     return False
