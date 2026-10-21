@@ -273,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
                 "calendar_next": state.get("calendar_next"),
                 "mail_cn_last": state.get("mail_cn_last"),
                 "memory_blocks": self._memory_versions(),
+                "memory_last_distill": state.get("memory_last_distill"),
+                "calendar_cn_error": state.get("calendar_cn_error"),
                 "followups_open": state.get("followups_open"),
                 "followup_next": state.get("followup_next"),
             })

@@ -307,6 +307,11 @@ def tick(state):
             out = agent_memory.distill_propose(state["tick_count"])
             if out:
                 proposal, consumed = out
+                state["memory_last_distill"] = {
+                    "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "consumed": consumed,
+                    "edits_proposed": len(proposal["edits"]),
+                    "reflection": (proposal["reflection"] or "")[:120]}
                 if proposal["edits"]:
                     labels = "、".join(sorted(
                         {e.get("label", "?") for e in proposal["edits"]}))
@@ -319,6 +324,9 @@ def tick(state):
                 else:
                     log(f"[记忆蒸馏] 消费 {consumed} 条观察，无值得落库的改动")
     except Exception as e:
+        state["memory_last_distill"] = {
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "error": str(e)[:200]}
         log(f"[记忆蒸馏] 异常（已忽略）: {e}")
 
     # 4. 输出：只有实质变化或需要拍板才说话

@@ -261,8 +261,45 @@ def _parse_vevents(ics_text):
     return out
 
 
+def _report_events(cfg, cal_url, body, depth):
+    status, raw = _request(cfg, "REPORT", cal_url, body, depth=depth)
+    if status not in (200, 207):
+        raise RuntimeError(f"REPORT 返回 HTTP {status}")
+    root = ET.fromstring(raw)
+    events = []
+    for el in root.iter(f"{{{C}}}calendar-data"):
+        if el.text:
+            events.extend(_parse_vevents(el.text))
+    return events
+
+
+def _get_events(cfg, cal_url):
+    """兜底路径：列出日历里的 .ics 资源逐个 GET 回来本地解析。
+    有些 CalDAV 实现（尤其邮箱厂商的）REPORT 支持不完整，
+    但 PROPFIND+GET 是 WebDAV 基础能力，几乎都能走通。"""
+    root = _propfind(cfg, cal_url, "<D:getetag/><D:resourcetype/>", depth=1)
+    events = []
+    count = 0
+    for resp in root.iter(f"{{{D}}}response"):
+        href_el = resp.find(f"{{{D}}}href")
+        rt = resp.find(f".//{{{D}}}resourcetype")
+        if href_el is None:
+            continue
+        if rt is not None and rt.find(f"{{{D}}}collection") is not None:
+            continue  # 集合本身/子集合不是日程资源
+        if count >= 60:
+            break
+        url = urllib.parse.urljoin(cal_url, href_el.text.strip())
+        status, raw = _request(cfg, "GET", url)
+        if status == 200:
+            events.extend(_parse_vevents(raw.decode("utf-8", "replace")))
+            count += 1
+    return events
+
+
 def fetch_upcoming(days=7, limit=5):
-    """未来 days 天内的日程，按开始时间升序，最多 limit 条。"""
+    """未来 days 天内的日程，按开始时间升序，最多 limit 条。
+    每个日历依次尝试：REPORT(Depth 1) -> REPORT(Depth 0) -> PROPFIND+GET。"""
     cfg = load_config()
     if not cfg:
         raise RuntimeError("calendar_cn 未配置")
@@ -281,17 +318,19 @@ def fetch_upcoming(days=7, limit=5):
         "</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>")
     events, errors = [], []
     for cal_url in calendars:
-        try:
-            status, raw = _request(cfg, "REPORT", cal_url, body, depth=1)
-            if status not in (200, 207):
-                errors.append(f"HTTP {status}")
-                continue
-            root = ET.fromstring(raw)
-            for el in root.iter(f"{{{C}}}calendar-data"):
-                if el.text:
-                    events.extend(_parse_vevents(el.text))
-        except Exception as e:
-            errors.append(str(e))
+        got, last_err = None, None
+        for attempt in (lambda: _report_events(cfg, cal_url, body, 1),
+                        lambda: _report_events(cfg, cal_url, body, 0),
+                        lambda: _get_events(cfg, cal_url)):
+            try:
+                got = attempt()
+                break
+            except Exception as e:
+                last_err = e
+        if got is None:
+            errors.append(str(last_err))
+        else:
+            events.extend(got)
     if errors and not events:
         raise RuntimeError("日历查询失败：" + "；".join(errors))
     upcoming = [e for e in events if now <= e["start"] <= end]

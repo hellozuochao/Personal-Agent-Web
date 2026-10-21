@@ -191,12 +191,19 @@ def _mail_sense(state):
 # 相同的 state 字段（calendar_next），状态页/对话上下文不用改。
 
 def _calendar_cn_sense(state):
-    """看一眼 CalDAV 日历：未来 7 天的日程、最近的一条。"""
+    """看一眼 CalDAV 日历：未来 7 天的日程、最近的一条。
+    失败时把原因写进 state（calendar_cn_error），外面能直接读到，
+    不再只躺在服务器日志里（2026-10-22 教训：感官静默失败了一整夜）。"""
     import caldav_cn
+    import datetime as _dt
     try:
         upcoming = caldav_cn.fetch_upcoming(days=7, limit=5)
     except Exception as e:
+        state["calendar_cn_error"] = {
+            "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+            "note": str(e)}
         return {"ok": False, "note": f"日历读取失败: {e}"}
+    state.pop("calendar_cn_error", None)
     state["calendar_next"] = [
         {"summary": e["title"], "start": e["start"]} for e in upcoming]
     state["calendar_cn_last"] = {
