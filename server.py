@@ -17,6 +17,8 @@ GET / 直接返回配套网页 page.html（与本文件同目录），手机浏�
 import argparse
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,7 +39,7 @@ CHAT_SYSTEM = """你是运行在用户云服务器上的 always-on 个人智能�
 
 要求：
 - 用中文，简短直接，先给结论，不寒暄。
-- 你能汇报自己的实时状态（运行轮次、收件箱水位、待审批、未读消息），数据在下方上下文里。
+- 你能汇报自己的实时状态（运行轮次、待审批、未读消息、新邮件、日程），数据在下方上下文里。
 - 你目前只能对话和汇报，不能执行动作；用户让你做事时，说明这类动作要走审批流程，现在先记下需求。
 - 不知道的事就说不知道，不要编造。"""
 
@@ -47,6 +49,31 @@ try:
         PAGE_HTML = _f.read()
 except OSError:
     PAGE_HTML = "<h1>page.html 缺失</h1><p>网页文件不在 server.py 同目录。</p>"
+
+try:
+    import google_auth
+except Exception:
+    google_auth = None
+
+# Google 设备码授权流程状态（进程内）：
+# idle / waiting（等用户在手机上输码授权）/ connected / error / expired
+_google_flow = {"status": "idle"}
+
+
+def _google_flow_worker(device_code, interval):
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        time.sleep(max(int(interval or 5), 5))
+        status, info = google_auth.poll_device_token(device_code)
+        if status == "ok":
+            _google_flow.update(status="connected")
+            agent.log("[Google授权] 设备码流程完成，令牌已保存")
+            return
+        if status == "error":
+            _google_flow.update(status="error", detail=info)
+            agent.log(f"[Google授权] 流程失败: {info}")
+            return
+    _google_flow.update(status="expired")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -85,6 +112,26 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return None
 
+    def _google_status(self):
+        if google_auth is None or not google_auth.client_configured():
+            return {"client_configured": False, "connected": False,
+                    "flow": "unconfigured"}
+        out = {"client_configured": True,
+               "connected": google_auth.connected(),
+               "flow": _google_flow.get("status", "idle")}
+        if out["connected"]:
+            out["scope"] = google_auth.token_scope()
+            try:
+                prof = google_auth.api_get(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/profile")
+                out["email"] = prof.get("emailAddress")
+            except Exception:
+                pass
+        elif out["flow"] == "waiting":
+            out["user_code"] = _google_flow.get("user_code")
+            out["verification_url"] = _google_flow.get("verification_url")
+        return out
+
     def _chat(self, state, data):
         """POST /chat：把用户消息 + 精简历史 + 实时状态喂给模型，返回回复文本。"""
         if not OR_KEY:
@@ -114,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
             "undelivered": len([e for e in state.get("outbox", [])
                                 if not e.get("delivered")]),
             "recent_outbox": recent,
+            "gmail_last": state.get("gmail_last"),
+            "calendar_next": state.get("calendar_next"),
         }
         system = (CHAT_SYSTEM + "\n\n当前状态："
                   + json.dumps(context, ensure_ascii=False))
@@ -167,7 +216,11 @@ class Handler(BaseHTTPRequestHandler):
                 "undelivered": len([e for e in state.get("outbox", [])
                                     if not e.get("delivered")]),
                 "phone_data": state.get("phone_data", {}),
+                "gmail_last": state.get("gmail_last"),
+                "calendar_next": state.get("calendar_next"),
             })
+        if path == "/google/status":
+            return self._send(200, self._google_status())
         if path == "/outbox":
             items = [e for e in state.get("outbox", []) if not e.get("delivered")]
             return self._send(200, {"items": items})
@@ -196,6 +249,35 @@ class Handler(BaseHTTPRequestHandler):
                 start_new_session=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self._send(202, {"update": "started"})
+
+        if path == "/google/connect":
+            # 发起 Google 设备码授权：返回网址+短码，用户在手机上输码授权，
+            # 后台线程轮询换令牌。授权状态查 GET /google/status。
+            if google_auth is None or not google_auth.client_configured():
+                return self._send(409, {"error": "client_not_configured"})
+            if google_auth.connected():
+                return self._send(200, {"status": "already_connected"})
+            if _google_flow.get("status") == "waiting":
+                return self._send(200, {
+                    "status": "waiting",
+                    "user_code": _google_flow.get("user_code"),
+                    "verification_url": _google_flow.get("verification_url")})
+            try:
+                flow = google_auth.start_device_flow()
+            except Exception as e:
+                return self._send(502, {"error": f"start_failed: {e}"})
+            _google_flow.update(
+                status="waiting", user_code=flow.get("user_code"),
+                verification_url=flow.get("verification_url"))
+            threading.Thread(
+                target=_google_flow_worker,
+                args=(flow.get("device_code"), flow.get("interval", 5)),
+                daemon=True).start()
+            agent.log("[Google授权] 设备码流程已发起")
+            return self._send(200, {
+                "status": "waiting",
+                "user_code": flow.get("user_code"),
+                "verification_url": flow.get("verification_url")})
 
         if path == "/report":
             # 手机端上报本地数据（电量/位置/日历/通知等），原样存入

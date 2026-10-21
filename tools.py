@@ -69,3 +69,92 @@ TOOLS = [
 # 云服务器上该文件不存在，模型一夜提了 79 条重复审批、190 条消息）。
 if os.path.exists(WATERLINE_FILE):
     TOOLS.append(Tool("inbox_waterline", cost=2, run=_inbox_waterline))
+
+
+# ---------- Google 感官（Gmail 只读元数据 + 日历只读） ----------
+# 能力跟着授权走：google_token.json 在（用户已完成 Google 授权）才注册。
+
+def _gmail_sense(state):
+    """看一眼收件箱最新 10 封：新邮件只回元数据（发件人/主题/时间/摘要），
+    不读正文。首轮只记基线不报新。"""
+    import google_auth
+    data = google_auth.api_get(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+        "?labelIds=INBOX&maxResults=10")
+    msgs = data.get("messages", [])
+    prev_ids = state.get("gmail_seen_ids")
+    first_run = prev_ids is None
+    prev = set(prev_ids or [])
+    new_items = []
+    for m in msgs:
+        if m["id"] in prev:
+            continue
+        meta = google_auth.api_get(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}"
+            "?format=metadata&metadataHeaders=From&metadataHeaders=Subject"
+            "&metadataHeaders=Date")
+        headers = {h["name"]: h["value"]
+                   for h in meta.get("payload", {}).get("headers", [])}
+        new_items.append({"from": headers.get("From", ""),
+                          "subject": headers.get("Subject", ""),
+                          "date": headers.get("Date", ""),
+                          "snippet": meta.get("snippet", "")[:120]})
+    state["gmail_seen_ids"] = [m["id"] for m in msgs]
+    result = {"ok": True, "checked": len(msgs),
+              "new_count": 0 if first_run else len(new_items),
+              "new": [] if first_run else new_items,
+              "note": "首轮只记基线" if first_run else ""}
+    state["gmail_last"] = {"new_count": result["new_count"],
+                           "new": result["new"]}
+    return result
+
+
+def _calendar_sense(state):
+    """看未来 48 小时日程：事件集合变了才算变化；另标出 2 小时内要开始的。"""
+    import datetime as _dt
+    import hashlib
+    import json as _json
+    import urllib.parse
+    import google_auth
+    now = _dt.datetime.now(_dt.timezone.utc)
+    params = {
+        "timeMin": now.isoformat().replace("+00:00", "Z"),
+        "timeMax": (now + _dt.timedelta(hours=48)).isoformat().replace("+00:00", "Z"),
+        "singleEvents": "true", "orderBy": "startTime", "maxResults": "20",
+    }
+    data = google_auth.api_get(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?"
+        + urllib.parse.urlencode(params))
+    events = []
+    for e in data.get("items", []):
+        start = (e.get("start") or {}).get("dateTime") or (e.get("start") or {}).get("date")
+        events.append({"id": e.get("id"),
+                       "summary": e.get("summary", "(无标题)"),
+                       "start": start})
+    digest = hashlib.md5(_json.dumps(
+        events, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    first_run = "calendar_digest" not in state
+    changed = (not first_run) and state.get("calendar_digest") != digest
+    state["calendar_digest"] = digest
+    soon = []
+    for e in events:
+        try:
+            st = _dt.datetime.fromisoformat(e["start"].replace("Z", "+00:00"))
+        except Exception:
+            continue  # 全天事件只有日期，跳过"即将开始"判定
+        if _dt.timedelta(0) <= (st - now) <= _dt.timedelta(hours=2):
+            soon.append(e)
+    state["calendar_next"] = events[:5]
+    return {"ok": True, "events_48h": events, "changed": changed,
+            "starting_soon": soon,
+            "note": "首轮只记基线" if first_run else ""}
+
+
+try:
+    import google_auth as _ga
+    _GOOGLE_READY = _ga.connected()
+except Exception:
+    _GOOGLE_READY = False
+if _GOOGLE_READY:
+    TOOLS.append(Tool("gmail_sense", cost=3, run=_gmail_sense))
+    TOOLS.append(Tool("calendar_sense", cost=4, run=_calendar_sense))
