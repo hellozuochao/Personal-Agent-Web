@@ -37,6 +37,36 @@ def _mail_flag(params):
     return True, f"已给 {n} 封邮件加星标"
 
 
+def _mail_archive(params):
+    import mail_cn
+    uids = _uids(params)
+    if not uids:
+        return False, "没有有效的邮件 uid"
+    folder = str(params.get("folder") or "").strip()
+    if not folder:
+        return False, "缺少目标文件夹 folder"
+    n = mail_cn.move_messages(uids, folder)
+    return True, f"已把 {n} 封邮件移到「{folder}」"
+
+
+def _mail_draft_reply(params):
+    import mail_cn
+    to = str(params.get("to") or "").strip()
+    subject = str(params.get("subject") or "").strip()
+    body = str(params.get("body") or "").strip()
+    if not to or "@" not in to:
+        return False, "收件人 to 不合法"
+    if not subject:
+        return False, "缺少主题 subject"
+    if not body:
+        return False, "缺少正文 body"
+    if len(body) > 4000:
+        return False, "正文超过 4000 字，请缩短"
+    drafts = mail_cn.create_draft(
+        to, subject, body, str(params.get("in_reply_to") or "").strip())
+    return True, f"回复草稿已存入「{drafts}」：{subject}（发给 {to}，未发送）"
+
+
 def _memory_apply(params):
     import datetime
     import memory as agent_memory
@@ -71,6 +101,8 @@ def _followup_create(params):
 EXECUTORS = {
     "mail_mark_read": _mail_mark_read,
     "mail_flag": _mail_flag,
+    "mail_archive": _mail_archive,
+    "mail_draft_reply": _mail_draft_reply,
     "memory_apply": _memory_apply,
     "followup_create": _followup_create,
 }

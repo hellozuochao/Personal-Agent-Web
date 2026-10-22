@@ -135,6 +135,30 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _journal(self, state):
+        """决策日志：最近若干轮 tick 的观察记录（它看到了什么、做了什么），
+        加上蒸馏/日历/备份的最新状态，网页「日志」页签用。"""
+        ticks = []
+        try:
+            path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "observations.jsonl")
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()[-40:]
+            for line in lines:
+                line = line.strip()
+                if line:
+                    ticks.append(json.loads(line))
+            ticks.reverse()
+        except Exception:
+            ticks = []
+        return {
+            "ticks": ticks,
+            "memory_last_distill": state.get("memory_last_distill"),
+            "calendar_cn_error": state.get("calendar_cn_error"),
+            "last_backup": state.get("last_backup"),
+        }
+
     def _google_status(self):
         if google_auth is None or not google_auth.client_configured():
             return {"client_configured": False, "connected": False,
@@ -275,6 +299,7 @@ class Handler(BaseHTTPRequestHandler):
                 "memory_blocks": self._memory_versions(),
                 "memory_last_distill": state.get("memory_last_distill"),
                 "calendar_cn_error": state.get("calendar_cn_error"),
+                "last_backup": state.get("last_backup"),
                 "followups_open": state.get("followups_open"),
                 "followup_next": state.get("followup_next"),
             })
@@ -302,6 +327,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"items": items})
         if path == "/approvals":
             return self._send(200, {"items": self._pending_approvals(state)})
+        if path == "/journal":
+            return self._send(200, self._journal(state))
+        if path == "/admin/backup":
+            import backup as agent_backup
+            data = agent_backup.build_zip_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="always-on-backup.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         return self._send(404, {"error": "not found"})
 
     # ---------- 写 ----------

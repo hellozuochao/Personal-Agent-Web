@@ -135,10 +135,17 @@ DECIDE_SYSTEM = """你是 always-on 个人智能体的决策模块。输入是�
 - 输入里带了 pending_approvals（待审批数）和 last_spoken（上一条播报）：
   同一问题已在待审批中、或刚播报过，就不要重复提出、不要重复 speak。
   持续存在的状态（如某文件一直缺失）只报第一次，后续轮次视为无事。
-- 可执行动作：mail_sense 观察里的邮件带 uid。把邮件标记为已读、或加星标时，
-  给动作附带 exec 载荷：{"type": "mail_mark_read" 或 "mail_flag",
-  "params": {"uids": [uid, ...]}}，uid 必须来自本轮观察数据、不许编造；
-  带 exec 的动作一律 needs_approval=true。其他动作不要带 exec。
+- 可执行动作：mail_sense 观察里的邮件带 uid、from_addr、message_id，
+  另有 folders 列出账号里真实存在的文件夹名。可用 exec 类型：
+  mail_mark_read / mail_flag：params {"uids": [uid, ...]}；
+  mail_archive：把邮件移到文件夹，params {"uids": [...], "folder": "文件夹名"}，
+  folder 只能从 folders 里选、不要编造，明显是通知/账单堆积时才提议归档；
+  mail_draft_reply：为某封邮件起草回复（只存草稿、绝不发送），
+  params {"to": "对方邮箱（用 from_addr）", "subject": "Re: 原主题",
+  "body": "完整可直接发送的回复正文", "in_reply_to": "原邮件 message_id"}，
+  仅当新邮件明显需要用户回复时才提议，正文要写完整、语气得体；
+  uid 必须来自本轮观察数据、不许编造；带 exec 的动作一律 needs_approval=true。
+  其他动作不要带 exec。
 - 跟进事项：followup_sense 观察的 due 非空 = 有跟进事项到期，
   用 speak 提醒用户（material_change），一次说清哪件事。
   当一件事需要在未来某个时间跟进（等回复、等结果、到期处理）时，
@@ -328,6 +335,16 @@ def tick(state):
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "error": str(e)[:200]}
         log(f"[记忆蒸馏] 异常（已忽略）: {e}")
+
+    # 3d) 每日自动备份：状态/记忆/观察打包快照（防损坏与坏部署）
+    try:
+        import backup as agent_backup
+        snap = agent_backup.maybe_daily_snapshot(state)
+        if snap:
+            state["last_backup"] = snap
+            log(f"[备份] 今日快照完成：{snap['files']} 个文件")
+    except Exception as e:
+        log(f"[备份] 异常（已忽略）: {e}")
 
     # 4. 输出：只有实质变化或需要拍板才说话
     if plan["speak"]:

@@ -60,6 +60,7 @@
     <button data-tab="approvals">审批<span class="badge" id="bApp" style="display:none"></span></button>
     <button data-tab="chat">对话</button>
     <button data-tab="connectors">连接器</button>
+    <button data-tab="journal">日志</button>
   </div>
   <button id="refresh">刷新</button>
   <div id="view"><p class="empty">加载中…</p></div>
@@ -171,12 +172,57 @@ function load() {
     }).catch(err);
   } else if (tab === "connectors") {
     loadConnectors();
+  } else if (tab === "journal") {
+    loadJournal();
   } else {
     renderChat(false);
   }
 }
 function decide(path, i) {
   api(path, { method: "POST", body: JSON.stringify({ index: i }) }).then(load).catch(err);
+}
+function loadJournal() {
+  api("/journal").then(function (r) {
+    var view = document.getElementById("view");
+    var head = "";
+    if (r.last_backup)
+      head += '<div class="card"><div class="k">最近备份</div><div class="v">' +
+        esc(r.last_backup.date) + "（" + esc(r.last_backup.files) + ' 个文件）</div></div>';
+    if (r.memory_last_distill) {
+      var d = r.memory_last_distill;
+      head += '<div class="card"><div class="k">最近一次记忆蒸馏</div><div class="v">' +
+        (d.error ? "失败：" + esc(d.error)
+                 : "消费 " + esc(d.consumed || 0) + " 条观察，建议改动 " +
+                   esc(d.edits_proposed || 0) + " 处") +
+        '</div><div class="time">' + fmtT(d.ts) + '</div></div>';
+    }
+    if (r.calendar_cn_error)
+      head += '<div class="card"><div class="k">日历读取异常</div><div class="v">' +
+        esc(r.calendar_cn_error.note) + '</div><div class="time">' +
+        fmtT(r.calendar_cn_error.ts) + '</div></div>';
+    if (!r.ticks.length) {
+      view.innerHTML = head + '<p class="empty">还没有轮次记录</p>';
+      return;
+    }
+    view.innerHTML = head + r.ticks.map(function (t) {
+      var saw = [];
+      (t.new_mail || []).forEach(function (m) {
+        saw.push("新邮件：" + (m.subject || "(无主题)") + "（" + (m.from || "") + "）");
+      });
+      if (t.calendar_next) saw.push("最近日程：" + t.calendar_next);
+      (t.followup_due || []).forEach(function (x) { saw.push("跟进到期：" + x); });
+      var did = [];
+      if (t.spoke) did.push("播报：" + t.spoke);
+      (t.proposed || []).forEach(function (x) { did.push("提议：" + x); });
+      (t.executed || []).forEach(function (x) { did.push("执行：" + x); });
+      var body = "";
+      if (saw.length) body += '<div class="msg">看到 — ' + esc(saw.join("；")) + '</div>';
+      if (did.length) body += '<div class="msg">做了 — ' + esc(did.join("；")) + '</div>';
+      if (!body) body = '<div class="msg">无事，保持安静</div>';
+      return '<div class="card"><div class="v">第 ' + esc(t.tick) + ' 轮</div>' +
+             body + '<div class="time">' + fmtT(t.ts) + '</div></div>';
+    }).join("");
+  }).catch(err);
 }
 var CONN_STATE = { connected: "已连接", ready: "可连接", waiting: "等待授权", unconfigured: "未配置" };
 function loadConnectors() {

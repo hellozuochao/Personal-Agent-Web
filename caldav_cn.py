@@ -247,8 +247,10 @@ def _parse_vevents(ics_text):
             if "=" in p:
                 k, v = p.split("=", 1)
                 params[k.upper()] = v
-        if name in ("SUMMARY", "DTSTART", "DTEND", "UID"):
+        if name in ("SUMMARY", "DTSTART", "DTEND", "UID", "RRULE"):
             current[name] = (value, params)
+        elif name == "EXDATE":
+            current.setdefault("EXDATE", []).append((value, params))
     out = []
     for ev in events:
         if "DTSTART" not in ev:
@@ -257,8 +259,177 @@ def _parse_vevents(ics_text):
         if start is None:
             continue
         title = _unescape(ev.get("SUMMARY", ("日程", {}))[0]).strip() or "日程"
-        out.append({"title": title, "start": start, "all_day": all_day})
+        exdates = []
+        for value, params in ev.get("EXDATE", []):
+            for piece in value.split(","):
+                piece = piece.strip()
+                if piece:
+                    dt, _ = _parse_dt(piece, params)
+                    if dt is not None:
+                        exdates.append(dt)
+        out.append({"title": title, "start": start, "all_day": all_day,
+                    "rrule": ev.get("RRULE", (None, {}))[0],
+                    "exdates": exdates})
     return out
+
+
+_WEEKDAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+
+
+def _parse_rrule(text):
+    rule = {}
+    for part in text.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            rule[k.strip().upper()] = v.strip()
+    return rule
+
+
+def _until_value(raw, start):
+    raw = raw.strip()
+    try:
+        if raw.endswith("Z"):
+            return datetime.datetime.strptime(
+                raw, "%Y%m%dT%H%M%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+        if "T" in raw:
+            return datetime.datetime.strptime(
+                raw, "%Y%m%dT%H%M%S").replace(tzinfo=start.tzinfo)
+        d = datetime.datetime.strptime(raw, "%Y%m%d").date()
+        return datetime.datetime(d.year, d.month, d.day, 23, 59, 59,
+                                 tzinfo=start.tzinfo)
+    except Exception:
+        return None
+
+
+def _month_day(year, month, rule, start):
+    """按规则算某月的目标日期：BYDAY 序数（如 2TU/-1FR）优先，
+    其次 BYMONTHDAY，否则用起始日的日号。无效返回 None。"""
+    import calendar as _cal
+    last = _cal.monthrange(year, month)[1]
+    byday = rule.get("BYDAY", "")
+    if byday:
+        token = byday.split(",")[0].strip()
+        wd = _WEEKDAYS.get(token[-2:])
+        if wd is None:
+            return None
+        prefix = token[:-2]
+        if prefix:  # 带序数
+            try:
+                ordinal = int(prefix)
+            except Exception:
+                ordinal = 0
+            days = [d for d in range(1, last + 1)
+                    if datetime.date(year, month, d).weekday() == wd]
+            if ordinal > 0 and ordinal <= len(days):
+                return days[ordinal - 1]
+            if ordinal < 0 and -ordinal <= len(days):
+                return days[ordinal]
+            return None
+    if rule.get("BYMONTHDAY"):
+        try:
+            day = int(rule["BYMONTHDAY"].split(",")[0])
+        except Exception:
+            day = start.day
+    else:
+        day = start.day
+    return day if 1 <= day <= last else None
+
+
+def _expand_event(ev, win_start, win_end):
+    """把一个（可能带 RRULE 的）日程展开成窗口内的实例列表。
+    支持 DAILY/WEEKLY/MONTHLY/YEARLY + INTERVAL/COUNT/UNTIL/BYDAY/EXDATE，
+    覆盖绝大多数真实日历的写法；展开上限防死循环。"""
+    start = ev["start"]
+    base = {"title": ev["title"], "all_day": ev["all_day"]}
+    if not ev.get("rrule"):
+        return ([dict(base, start=start)]
+                if win_start <= start <= win_end else [])
+    rule = _parse_rrule(ev["rrule"])
+    freq = rule.get("FREQ", "").upper()
+    try:
+        interval = max(1, int(rule.get("INTERVAL", "1")))
+    except Exception:
+        interval = 1
+    count_limit = None
+    if rule.get("COUNT"):
+        try:
+            count_limit = int(rule["COUNT"])
+        except Exception:
+            count_limit = None
+    until = _until_value(rule["UNTIL"], start) if rule.get("UNTIL") else None
+    exdates = ev.get("exdates") or []
+
+    def excluded(dt):
+        for ex in exdates:
+            if ev["all_day"]:
+                if ex.date() == dt.date():
+                    return True
+            elif ex == dt:
+                return True
+        return False
+
+    instances = []
+    produced = [0]
+
+    def emit(cand):
+        """返回 False 表示序列应终止（超出 COUNT/UNTIL/窗口）。"""
+        produced[0] += 1
+        if count_limit is not None and produced[0] > count_limit:
+            return False
+        if until is not None and cand > until:
+            return False
+        if cand > win_end:
+            return False
+        if cand >= win_start and not excluded(cand):
+            instances.append(dict(base, start=cand))
+        return True
+
+    def at(day):
+        return datetime.datetime.combine(
+            day, datetime.time(start.hour, start.minute, start.second),
+            tzinfo=start.tzinfo)
+
+    if freq == "DAILY":
+        d = start.date()
+        for _ in range(2000):
+            if not emit(at(d)):
+                break
+            d += datetime.timedelta(days=interval)
+    elif freq == "WEEKLY":
+        byday = sorted({_WEEKDAYS[t.strip()[-2:]]
+                        for t in rule.get("BYDAY", "").split(",")
+                        if t.strip()[-2:] in _WEEKDAYS})
+        if not byday:
+            byday = [start.weekday()]
+        monday = start.date() - datetime.timedelta(days=start.weekday())
+        stop = False
+        for w in range(0, 520, interval):
+            if stop:
+                break
+            base_d = monday + datetime.timedelta(weeks=w)
+            for wd in byday:
+                cand_d = base_d + datetime.timedelta(days=wd)
+                if cand_d < start.date():
+                    continue  # 首周里起始日之前的星期几不算实例
+                if not emit(at(cand_d)):
+                    stop = True
+                    break
+    elif freq in ("MONTHLY", "YEARLY"):
+        step_months = interval if freq == "MONTHLY" else interval * 12
+        y, m = start.year, start.month
+        for _ in range(600):
+            day = _month_day(y, m, rule, start)
+            if day is not None:
+                cand = at(datetime.date(y, m, day))
+                if cand >= start and not emit(cand):
+                    break
+            m += step_months
+            y, m = y + (m - 1) // 12, (m - 1) % 12 + 1
+    else:  # 不认识的 FREQ：当单次处理
+        return ([dict(base, start=start)]
+                if win_start <= start <= win_end else [])
+    return instances
 
 
 def _report_events(cfg, cal_url, body, depth):
@@ -333,7 +504,9 @@ def fetch_upcoming(days=7, limit=5):
             events.extend(got)
     if errors and not events:
         raise RuntimeError("日历查询失败：" + "；".join(errors))
-    upcoming = [e for e in events if now <= e["start"] <= end]
+    upcoming = []
+    for e in events:
+        upcoming.extend(_expand_event(e, now, end))
     upcoming.sort(key=lambda e: e["start"])
     return [{"title": e["title"],
              "start": e["start"].isoformat(timespec="minutes"),

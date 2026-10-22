@@ -8,11 +8,14 @@
 不标已读（SELECT 只读 + BODY.PEEK）。
 """
 import email
+import email.utils
 import imaplib
 import json
 import os
 import re
+import time
 from email.header import decode_header
+from email.message import EmailMessage
 
 PRIVATE_DIR = os.environ.get("AGENT_PRIVATE_DIR") or os.environ.get(
     "GOOGLE_PRIVATE_DIR", "/opt/always-on-private")
@@ -156,19 +159,32 @@ def fetch_recent(limit=5):
             start = max(1, total - limit + 1)
             typ, msg_data = conn.fetch(
                 f"{start}:{total}",
-                "(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                "(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])")
             if typ == "OK":
                 for item in msg_data:
                     if isinstance(item, tuple):
                         m = re.search(rb"UID (\d+)", item[0])
                         msg = email.message_from_bytes(item[1])
+                        from_decoded = _decode(msg.get("From"))
                         latest.append({
                             "uid": int(m.group(1)) if m else None,
-                            "from": _decode(msg.get("From")),
+                            "from": from_decoded,
+                            "from_addr": email.utils.parseaddr(from_decoded)[1],
                             "subject": _decode(msg.get("Subject")),
-                            "date": msg.get("Date", "")})
+                            "date": msg.get("Date", ""),
+                            "message_id": (msg.get("Message-ID")
+                                           or "").strip()})
                 latest.reverse()
-        return {"total": total, "unseen": unseen, "latest": latest}
+        folders = []
+        try:
+            typ, list_data = conn.list()
+            if typ == "OK" and list_data:
+                folders = [name for name, _ in
+                           _parse_list_lines(list_data)]
+        except Exception:
+            folders = []
+        return {"total": total, "unseen": unseen, "latest": latest,
+                "folders": folders}
     finally:
         try:
             conn.logout()
@@ -207,3 +223,119 @@ def mark_read(uids):
 def set_flag(uids):
     """给指定 uid 的邮件加星标（重要标记）。返回处理封数。"""
     return _uid_store(uids, r"\Flagged")
+
+
+def _parse_list_lines(list_data):
+    """解析 IMAP LIST 返回行 -> [(文件夹名, 属性串)]。
+    行形如：(\\HasNoChildren \\Drafts) "/" "Drafts" 或 ... INBOX"""
+    out = []
+    for raw in list_data or []:
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace") if isinstance(
+            raw, (bytes, bytearray)) else str(raw)
+        m = re.match(r"\((?P<attrs>[^)]*)\)\s+(?:\"[^\"]*\"|NIL)\s+"
+                     r"(?P<name>\"(?:[^\"\\]|\\.)*\"|\S+)\s*$", line.strip())
+        if not m:
+            continue
+        name = m.group("name")
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        out.append((name, m.group("attrs")))
+    return out
+
+
+def list_folders():
+    """列出账号里的文件夹名（执行层校验目标文件夹用）。"""
+    cfg = load_config()
+    if not cfg:
+        raise RuntimeError("mail_cn 未配置")
+    conn = _connect(cfg)
+    try:
+        typ, data = conn.list()
+        if typ != "OK":
+            raise RuntimeError("列文件夹失败")
+        return [name for name, _ in _parse_list_lines(data)]
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def move_messages(uids, folder):
+    """把指定 uid 的邮件从收件箱移到 folder（COPY + 删除 + 清除）。
+    folder 必须真实存在，不存在就报错并列出现有文件夹，绝不乱建。"""
+    cfg = load_config()
+    if not cfg:
+        raise RuntimeError("mail_cn 未配置")
+    conn = _connect(cfg)
+    try:
+        typ, data = conn.list()
+        names = [n for n, _ in _parse_list_lines(data)] if typ == "OK" else []
+        if folder not in names:
+            raise RuntimeError(
+                f"文件夹「{folder}」不存在（现有：{'、'.join(names) or '未知'}）")
+        typ, _ = conn.select("INBOX")
+        if typ != "OK":
+            raise RuntimeError("打不开收件箱")
+        uidset = ",".join(str(int(u)) for u in uids)
+        quoted = '"' + folder.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        typ, _ = conn.uid("COPY", uidset, quoted)
+        if typ != "OK":
+            raise RuntimeError("复制到目标文件夹被服务器拒绝")
+        typ, _ = conn.uid("STORE", uidset, "+FLAGS", r"(\Deleted)")
+        if typ != "OK":
+            raise RuntimeError("删除原件被服务器拒绝（副本可能已生成）")
+        conn.expunge()
+        return len(uids)
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def create_draft(to, subject, body, in_reply_to=""):
+    """在草稿箱新建一封草稿（不发送）。返回落入的草稿文件夹名。"""
+    cfg = load_config()
+    if not cfg:
+        raise RuntimeError("mail_cn 未配置")
+    conn = _connect(cfg)
+    try:
+        typ, data = conn.list()
+        pairs = _parse_list_lines(data) if typ == "OK" else []
+        drafts = None
+        for name, attrs in pairs:
+            if "\\Drafts" in attrs:
+                drafts = name
+                break
+        if drafts is None:
+            for name, _ in pairs:
+                if name.lower() == "drafts":
+                    drafts = name
+                    break
+        if drafts is None:
+            raise RuntimeError(
+                f"找不到草稿箱（现有文件夹：{'、'.join(n for n, _ in pairs)}）")
+        msg = EmailMessage()
+        msg["From"] = cfg.get("email", "")
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        msg["Message-ID"] = email.utils.make_msgid()
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+            msg["References"] = in_reply_to
+        msg.set_content(body)
+        typ, _ = conn.append(
+            drafts, r"\Draft",
+            imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+        if typ != "OK":
+            raise RuntimeError("写入草稿箱被服务器拒绝")
+        return drafts
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass

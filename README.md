@@ -81,6 +81,22 @@ scaffold 阶段可接受，后续换 SQLite 或加文件锁。
 - 跟进事项（2026-10-21 起，`followups.py`）：agent 替用户记的到期
   跟进清单。只能经审批动作 followup_create 创建；到期后 24 小时内
   由 followup_sense 每轮上报，decide() 开口提醒；超窗自动过期。
+- 自动备份（2026-10-22 起，`backup.py`）：每天首次 tick 时把运行时
+  数据文件（state/approvals/记忆块/观察/跟进等，不含私钥目录）快照
+  到 `backups/<日期>/`（保留 7 天）；`GET /admin/update` 之外新增
+  `GET /admin/backup` 导出 zip，供外部定时拉取存异地副本。
+- 日历重复日程展开（2026-10-22 起）：`caldav_cn.py` 支持 RRULE
+  （DAILY/WEEKLY/MONTHLY/YEARLY + INTERVAL/COUNT/UNTIL/BYDAY/序数
+  BYDAY/EXDATE），查询走三级兜底：REPORT(Depth 1) → REPORT(Depth 0)
+  → PROPFIND+GET 逐个取 .ics。感官失败原因写进 state（calendar_cn_
+  error），蒸馏结果写进 memory_last_distill，都可在 /status 查到。
+- 执行面扩容（2026-10-22 起）：新增 `mail_archive`（按 uid 移到指定
+  文件夹，文件夹名必须在账号真实列表里）与 `mail_draft_reply`
+  （按原邮件起草回复存入草稿箱，只存不发）。mail_sense 观察新增
+  from_addr/message_id/folders 字段供决策引用。
+- 决策日志（2026-10-22 起）：`GET /journal` 返回最近 40 轮观察记录
+  （看到什么、做了什么）+ 蒸馏/日历/备份最新状态；网页新增「日志」
+  页签渲染。
 
 ## 部署到云服务器（deploy/）
 
